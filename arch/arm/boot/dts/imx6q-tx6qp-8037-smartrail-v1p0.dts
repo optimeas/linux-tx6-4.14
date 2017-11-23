@@ -1,0 +1,108 @@
+/*
+ * Copyright (C) 2017 optiMEAS Measurement and Automation Systems GmbH
+ * Author: Matthias Klein <matthias.klein@optimeas.de>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * based on imx6q-tx6q-1036.dts (according Oliver Wendt / Ka-Ro: TX6Q-1036 and TX6QP-8037 are identical from device tree view)
+ */
+
+/dts-v1/;
+#include "imx6q.dtsi"
+#include "imx6qdl-tx6.dtsi"
+
+/ {
+	model = "optiMEAS smartRAIL";
+	compatible = "optimeas,tx6qp-smartrail", "karo,imx6q-tx6q", "fsl,imx6q";
+};
+
+&ds1339 {
+	status = "disabled";
+};
+
+&gpmi {
+	status = "disabled";
+};
+
+&ipu1_di0_disp0 {
+	status = "disabled";
+};
+
+&ipu2 {
+	status = "disabled";
+};
+
+&reg_lcd0_pwr {
+	status = "disabled";
+};
+
+&usdhc4 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_usdhc4>;
+	bus-width = <4>;
+	non-removable;
+	no-1-8-v;
+	fsl,wp-controller;
+	status = "okay";
+};
+
+/* 0x1f4 = HYS1: Hysteresis Enabled; PKE1: Pull/Keeper Enabled; PUE1: Pull; PUS11:  22[kOhm] Pull Up; ODE0: Open Drain Disabled; DSE10: High Drive Strength */
+/* 0x1e0 = HYS1: Hysteresis Enabled; PKE1: Pull/Keeper Enabled; PUE1: Pull; PUS10: 100[kOhm] Pull Up; ODE0: Open Drain Disabled; DSE10: Low  Drive Strength */
+
+&iomuxc {
+	pinctrl-0 = <&pinctrl_hog &pinctrl_optimeas>;
+
+	pinctrl_optimeas: optimeasgrp {
+		fsl,pins = <
+			MX6QDL_PAD_GPIO_9__GPIO1_IO09		0x1e0 	// IN:  SUSP_IND1		(Suspend output from USB hub)
+			MX6QDL_PAD_GPIO_4__GPIO1_IO04		0x1f4	// OUT: RS485_DE		(RS485 driver enable)
+			MX6QDL_PAD_KEY_COL2__GPIO4_IO10		0x1f4	// OUT: RS485_/RE		(RS485 receiver enable)
+			MX6QDL_PAD_KEY_COL3__GPIO4_IO12		0x1f4	// OUT: RS232_/EN		(RS232 transceiver enable)
+			MX6QDL_PAD_GPIO_2__GPIO1_IO02		0x1f4	// OUT: CAN0_STBY		(CAN0 transceiver standy)
+			MX6QDL_PAD_GPIO_5__GPIO1_IO05		0x1f4	// OUT: CAN1_STBY		(CAN1 transceiver standy)
+			MX6QDL_PAD_KEY_ROW2__GPIO4_IO11		0x1f4	// OUT: PWRKEY			(LTE modem power down)
+			MX6QDL_PAD_KEY_ROW3__GPIO4_IO13		0x1e0	// IN:  GPS_1PPS		(PPS output from GPS module)
+			MX6QDL_PAD_CSI0_DAT12__GPIO5_IO30	0x1f4	// OUT: GPIO_DOUT0		(User: digital output 0)
+			MX6QDL_PAD_CSI0_DAT13__GPIO5_IO31	0x1f4	// OUT: GPIO_DOUT1		(User: digital output 1)
+			MX6QDL_PAD_CSI0_DAT16__GPIO6_IO02	0x1e0	// IN:	GPIO_DIN0		(User: digital input 0)
+			MX6QDL_PAD_CSI0_DAT17__GPIO6_IO03	0x1e0	// IN:	GPIO_DIN1		(User: digital input 1)
+			MX6QDL_PAD_CSI0_VSYNC__GPIO5_IO21	0x1f4	// OUT: STATUS_LED0		(User: status LED 0)
+			MX6QDL_PAD_CSI0_PIXCLK__GPIO5_IO18	0x1f4	// OUT: STATUS_LED1		(User: status LED 1)
+			MX6QDL_PAD_GPIO_0__GPIO1_IO00		0x1f4	// OUT: STATUS_LED2		(User: status LED 2)
+			MX6QDL_PAD_DISP0_DAT0__GPIO4_IO21	0x1e0	// IN:  MC_OS_SELECT	(OS select signal from power controller)
+			MX6QDL_PAD_DI0_PIN15__GPIO4_IO17	0x1e0	// IN:  VIRGIN			(Jumper for initial eMMC flashing)
+			MX6QDL_PAD_CSI0_MCLK__GPIO5_IO19	0x1f4   // OUT: MODEM_DCDC_ON	(LTE modem power supply)
+		>;
+	};
+
+	pinctrl_usdhc4: usdhc4grp {
+		fsl,pins = <
+			MX6QDL_PAD_SD4_CMD__SD4_CMD		0x070b1
+			MX6QDL_PAD_SD4_CLK__SD4_CLK		0x070b1
+			MX6QDL_PAD_SD4_DAT0__SD4_DATA0		0x070b1
+			MX6QDL_PAD_SD4_DAT1__SD4_DATA1		0x070b1
+			MX6QDL_PAD_SD4_DAT2__SD4_DATA2		0x070b1
+			MX6QDL_PAD_SD4_DAT3__SD4_DATA3		0x070b1
+			MX6QDL_PAD_NANDF_ALE__SD4_RESET		0x0b0b1
+		>;
+	};
+};
+
+&i2c3 {
+	i2c_rtc: rv4162@68 {
+		compatible = "mc,rv4162";
+		reg = <0x68>;
+	};
+};
+
+&uart2 { /* ttymxc1 (RS232/485): pin63 / 64 */
+	pinctrl-0 = <&pinctrl_uart2 &pinctrl_uart2_rtscts>;
+	fsl,uart-has-rtscts;
+};
+
+&uart3 { /* ttymxc2 (GPS): pin67 / 68 */
+	pinctrl-0 = <&pinctrl_uart3>;
+};
+
