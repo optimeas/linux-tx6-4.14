@@ -100,6 +100,7 @@
 &uart2 { /* ttymxc1 (RS232/485): pin63 / 64 */
 	pinctrl-0 = <&pinctrl_uart2 &pinctrl_uart2_rtscts>;
 	fsl,uart-has-rtscts;
+    linux,rs485-enabled-at-boot-time;
 };
 
 &uart3 { /* ttymxc2 (GPS): pin67 / 68 */
