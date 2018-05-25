@@ -51,6 +51,18 @@ config CAN_GW
 	  They can be modified with AND/OR/XOR/SET operations as configured
 	  by the netlink configuration interface known e.g. from iptables.
 
+config CAN_ISOTP
+	tristate "ISO 15765-2:2016 CAN transport protocol (can-isotp)"
+	default m
+	---help---
+	  CAN Transport Protocols offer support for segmented Point-to-Point
+	  communication between CAN nodes via two defined CAN Identifiers.
+	  This protocol driver implements data transfers according ISO 15765-2.
+	  
+	  CAN ISO-TP is an unreliable datagram protocol and is implemented like this.
+	  For that reason error indications, like 'dropped PDUs in the receive path due
+	  to wrong SequenceNumbers' are intentionally not supported.
+
 source "drivers/net/can/Kconfig"
 
 endif
