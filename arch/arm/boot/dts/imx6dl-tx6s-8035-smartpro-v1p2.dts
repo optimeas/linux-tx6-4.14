@@ -46,6 +46,7 @@
 
 /* I2C1 - pin 40 + 41 */
 &i2c3 {
+	clock-frequency = <100000>;
 	status = "okay";
 
 /* LM75 is controlled by software 	
