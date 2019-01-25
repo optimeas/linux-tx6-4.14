@@ -216,38 +216,33 @@
 };
 
 
-/* Pad control register values:                                                                                                                             */
-/* 0x1f4 = HYS1: Hysteresis Enabled; PKE1: Pull/Keeper Enabled; PUE1: Pull; PUS11:  22[kOhm] Pull Up; ODE0: Open Drain Disabled; DSE10: High Drive Strength */
-/* 0x1e0 = HYS1: Hysteresis Enabled; PKE1: Pull/Keeper Enabled; PUE1: Pull; PUS10: 100[kOhm] Pull Up; ODE0: Open Drain Disabled; DSE10: Low  Drive Strength */
-
-
 &iomuxc {
 	pinctrl-0 = <&pinctrl_hog &pinctrl_optimeas>;
 
 	pinctrl_optimeas: optimeasgrp {
 		fsl,pins = <
-			MX6QDL_PAD_NANDF_CS2__GPIO6_IO15    0x1e0   /* IN:  GPIO6[15]  - BOOT_SELECT_0     */
-			MX6QDL_PAD_EIM_D29__GPIO3_IO29      0x1e0   /* IN:  GPIO2[29]  - BOOT_SELECT_1     */
-			MX6QDL_PAD_GPIO_9__GPIO1_IO09       0x1f4	/* OUT: GPIO NR9   - USB_HUB_RESET         */
-			MX6QDL_PAD_GPIO_1__GPIO1_IO01       0x1f4	/* OUT: GPIO NR1   - BUZZER  TODO: collides with PWM */                     
-			MX6QDL_PAD_EIM_A18__GPIO2_IO20      0x1f4	/* OUT: GPIO2[20]  - FPGA_MISC_0       */
-			MX6QDL_PAD_EIM_A17__GPIO2_IO21      0x1f4	/* OUT: GPIO2[21]  - FPGA_MISC_1       */
-			MX6QDL_PAD_EIM_A20__GPIO2_IO18      0x1f4	/* OUT: GPIO2[18]  - FPGA_MISC_2       */
-			MX6QDL_PAD_EIM_A19__GPIO2_IO19		0x1f4	/* OUT: GPIO2[19]  - FPGA_MISC_3       */
-			MX6QDL_PAD_EIM_A22__GPIO2_IO16		0x1f4	/* OUT: GPIO2[16]  - FPGA_MISC_4       */
-			MX6QDL_PAD_EIM_A21__GPIO2_IO17		0x1f4	/* OUT: GPIO2[17]  - FPGA_MISC_5       */
-			MX6QDL_PAD_EIM_A24__GPIO5_IO04      	0x1f4	/* OUT: GPIO5[4]   - FPGA_MISC_6       */
-			MX6QDL_PAD_EIM_A23__GPIO6_IO06		0x1f4	/* OUT: GPIO6[6]   - FPGA_MISC_7       */
-  			MX6QDL_PAD_CSI0_DAT12__GPIO5_IO30	0x1f4	/* OUT: GPIO NR 158 - ENV_DO_0         */
-			MX6QDL_PAD_CSI0_DAT13__GPIO5_IO31	0x1f4	/* OUT: GPIO NR 159 - ENV_DO_1         */
-			MX6QDL_PAD_CSI0_DAT14__GPIO6_IO00	0x1f4	/* OUT: GPIO NR 160 - ENV_DO_2         */
-			MX6QDL_PAD_CSI0_DAT15__GPIO6_IO01	0x1f4	/* OUT: GPIO NR 161 - ENV_DO_3         */
-			MX6QDL_PAD_CSI0_DAT16__GPIO6_IO02	0x1e0	/* IN:  GPIO NR 162 - ENV_DI_0         */
-			MX6QDL_PAD_CSI0_DAT17__GPIO6_IO03	0x1e0	/* IN:  GPIO NR 163 - ENV_DI_1         */
-			MX6QDL_PAD_CSI0_DAT18__GPIO6_IO04	0x1e0	/* IN:  GPIO NR 164 - ENV_DI_2         */
-			MX6QDL_PAD_CSI0_DAT19__GPIO6_IO05	0x1e0	/* IN:  GPIO NR 165 - ENV_DI_3         */
-			MX6QDL_PAD_DI0_PIN15__GPIO4_IO17	0x1e0	/* IN:  GPIO NR 113 - BUTTON_POWER     */
-			MX6QDL_PAD_DI0_PIN2__GPIO4_IO18		0x1e0	/* IN:  GPIO NR 114 - BUTTON_USER      */
+			MX6QDL_PAD_NANDF_CS2__GPIO6_IO15    0x1b0b0   /* IN:  GPIO6[15]  - BOOT_SELECT_0     */
+			MX6QDL_PAD_EIM_D29__GPIO3_IO29      0x1b0b0   /* IN:  GPIO2[29]  - BOOT_SELECT_1     */
+			MX6QDL_PAD_GPIO_9__GPIO1_IO09       0x1f0f0	/* OUT: GPIO NR9   - USB_HUB_RESET         */
+			MX6QDL_PAD_GPIO_1__GPIO1_IO01       0x1f0f0	/* OUT: GPIO NR1   - BUZZER  TODO: collides with PWM */                     
+			MX6QDL_PAD_EIM_A18__GPIO2_IO20      0x1f0f0	/* OUT: GPIO2[20]  - FPGA_MISC_0       */
+			MX6QDL_PAD_EIM_A17__GPIO2_IO21      0x1f0f0	/* OUT: GPIO2[21]  - FPGA_MISC_1       */
+			MX6QDL_PAD_EIM_A20__GPIO2_IO18      0x1f0f0	/* OUT: GPIO2[18]  - FPGA_MISC_2       */
+			MX6QDL_PAD_EIM_A19__GPIO2_IO19		0x1f0f0	/* OUT: GPIO2[19]  - FPGA_MISC_3       */
+			MX6QDL_PAD_EIM_A22__GPIO2_IO16		0x1f0f0	/* OUT: GPIO2[16]  - FPGA_MISC_4       */
+			MX6QDL_PAD_EIM_A21__GPIO2_IO17		0x1f0f0	/* OUT: GPIO2[17]  - FPGA_MISC_5       */
+			MX6QDL_PAD_EIM_A24__GPIO5_IO04      0x1f0f0	/* OUT: GPIO5[4]   - FPGA_MISC_6       */
+			MX6QDL_PAD_EIM_A23__GPIO6_IO06		0x1f0f0	/* OUT: GPIO6[6]   - FPGA_MISC_7       */
+  			MX6QDL_PAD_CSI0_DAT12__GPIO5_IO30	0x1f0f0	/* OUT: GPIO NR 158 - ENV_DO_0         */
+			MX6QDL_PAD_CSI0_DAT13__GPIO5_IO31	0x1f0f0	/* OUT: GPIO NR 159 - ENV_DO_1         */
+			MX6QDL_PAD_CSI0_DAT14__GPIO6_IO00	0x1f0f0	/* OUT: GPIO NR 160 - ENV_DO_2         */
+			MX6QDL_PAD_CSI0_DAT15__GPIO6_IO01	0x1f0f0	/* OUT: GPIO NR 161 - ENV_DO_3         */
+			MX6QDL_PAD_CSI0_DAT16__GPIO6_IO02	0x1b0b0	/* IN:  GPIO NR 162 - ENV_DI_0         */
+			MX6QDL_PAD_CSI0_DAT17__GPIO6_IO03	0x1b0b0	/* IN:  GPIO NR 163 - ENV_DI_1         */
+			MX6QDL_PAD_CSI0_DAT18__GPIO6_IO04	0x1b0b0	/* IN:  GPIO NR 164 - ENV_DI_2         */
+			MX6QDL_PAD_CSI0_DAT19__GPIO6_IO05	0x1b0b0	/* IN:  GPIO NR 165 - ENV_DI_3         */
+			MX6QDL_PAD_DI0_PIN15__GPIO4_IO17	0x1b0b0	/* IN:  GPIO NR 113 - BUTTON_POWER     */
+			MX6QDL_PAD_DI0_PIN2__GPIO4_IO18		0x1b0b0	/* IN:  GPIO NR 114 - BUTTON_USER      */
 		>;
 	};
 
