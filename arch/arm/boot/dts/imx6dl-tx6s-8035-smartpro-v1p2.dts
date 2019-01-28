@@ -221,8 +221,8 @@
 
 	pinctrl_optimeas: optimeasgrp {
 		fsl,pins = <
-			MX6QDL_PAD_NANDF_CS2__GPIO6_IO15    0x1b0b0   /* IN:  GPIO6[15]  - BOOT_SELECT_0     */
-			MX6QDL_PAD_EIM_D29__GPIO3_IO29      0x1b0b0   /* IN:  GPIO2[29]  - BOOT_SELECT_1     */
+			MX6QDL_PAD_NANDF_CS2__GPIO6_IO15    0x1b0b0 /* IN:  GPIO6[15]  - BOOT_SELECT_0     */
+			MX6QDL_PAD_EIM_D29__GPIO3_IO29      0x1b0b0 /* IN:  GPIO2[29]  - BOOT_SELECT_1     */
 			MX6QDL_PAD_GPIO_9__GPIO1_IO09       0x1f0f0	/* OUT: GPIO NR9   - USB_HUB_RESET         */
 			MX6QDL_PAD_GPIO_1__GPIO1_IO01       0x1f0f0	/* OUT: GPIO NR1   - BUZZER  TODO: collides with PWM */                     
 			MX6QDL_PAD_EIM_A18__GPIO2_IO20      0x1f0f0	/* OUT: GPIO2[20]  - FPGA_MISC_0       */
