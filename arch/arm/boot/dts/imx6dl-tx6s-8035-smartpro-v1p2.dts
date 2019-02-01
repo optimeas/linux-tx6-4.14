@@ -103,6 +103,7 @@
 /* SPI1 - pin 44 - 49 */
 &ecspi1 {
     compatible = "om,imx53-ecspi";
+	pinctrl-0 = <&pinctrl_ecspi1_native_cs>;
     fsl,spi-num-chipselects = <2>;
     status = "okay";
     /delete-node/ spi@0;
@@ -298,6 +299,17 @@
 			MX6QDL_PAD_SD4_DAT2__SD4_DATA2		0x070b1
 			MX6QDL_PAD_SD4_DAT3__SD4_DATA3		0x070b1
 			MX6QDL_PAD_NANDF_ALE__SD4_RESET		0x0b0b1
+		>;
+	};
+
+	pinctrl_ecspi1_native_cs: ecspi1grp_native_cs {
+		fsl,pins = <
+			MX6QDL_PAD_EIM_D18__ECSPI1_MOSI		0x0b0b0
+			MX6QDL_PAD_EIM_D17__ECSPI1_MISO		0x0b0b0
+			MX6QDL_PAD_EIM_D16__ECSPI1_SCLK		0x0b0b0
+			MX6QDL_PAD_GPIO_19__ECSPI1_RDY		0x0b0b0
+			MX6QDL_PAD_EIM_EB2__ECSPI1_SS0		0x0b0b0 /* SPI CS0 - native */
+			MX6QDL_PAD_EIM_D19__ECSPI1_SS1		0x0b0b0 /* SPI CS1 - native */
 		>;
 	};
 };
