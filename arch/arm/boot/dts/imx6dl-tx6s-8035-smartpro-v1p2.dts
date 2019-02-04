@@ -142,6 +142,9 @@
 	status = "disabled"; /* pads partially clash with several other I/Os */
 };
 
+&user_led {
+	status = "disabled"; /* pin clash with ADC SYNC */
+};
 
 &reg_lcd0_pwr {
 	status = "disabled";
