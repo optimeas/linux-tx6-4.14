@@ -20,6 +20,14 @@
 	cpus {
 		/delete-node/ cpu@1;
 	};
+
+    /* external connected oscillator */
+    osc: oscillator {
+        compatible = "fixed-clock";
+        #clock-cells = <1>;
+        clock-frequency  = <10000000>;
+        clock-output-names = "osc";
+    };
 };
 
 &ds1339 {
@@ -52,14 +60,15 @@
 		reg = <0>; // SPI chip select
 		interrupt-parent = <&gpio3>;
 		interrupts = <26 IRQ_TYPE_EDGE_RISING>;
-//TBD		clocks = <>;
+		clocks = <&osc 0>;
     };
+
     can1: can@1 {
 		compatible = "microchip,mcp2515";
 		reg = <1>; // SPI chip select
 		interrupt-parent = <&gpio4>;
 		interrupts = <6 IRQ_TYPE_EDGE_RISING>;
-//TBD		clocks = <>;
+		clocks = <&osc 0>;
     };
 };
 
