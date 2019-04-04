@@ -58,11 +58,15 @@
 		regulator-max-microvolt = <3300000>;
 		regulator-always-on;
 	};
+
+	/delete-node/ sound;
+	/delete-node/ gpio-keys;
 };
 
 
 &lcd_panel {
 	compatible = "edt,etm0700g0edh6";
+	pixelclk-active = <1>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_lcd0_pwr>;
 	enable-gpios = <&gpio3 29 GPIO_ACTIVE_HIGH>;
@@ -74,6 +78,14 @@
 			remote-endpoint = <&lcd_out>;
 		};
 	};
+};
+
+&sgtl5000 {
+	status = "disabled";
+};
+
+&kpp {
+	status = "disabled";
 };
 
 &ds1339 {
