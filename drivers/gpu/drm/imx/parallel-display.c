@@ -55,11 +55,16 @@ static int imx_pd_connector_get_modes(struct drm_connector *connector)
 	struct device_node *np = imxpd->dev->of_node;
 	int num_modes = 0;
 
+
 	if (imxpd->panel && imxpd->panel->funcs &&
 	    imxpd->panel->funcs->get_modes) {
 		num_modes = imxpd->panel->funcs->get_modes(imxpd->panel);
-		if (num_modes > 0)
-			return num_modes;
+#if 1
+	/* Make sure to get mode from DRM */
+#else
+	if (num_modes > 0)
+		return num_modes;
+#endif
 	}
 
 	if (imxpd->edid) {
@@ -120,7 +125,6 @@ static int imx_pd_encoder_atomic_check(struct drm_encoder *encoder,
 	struct imx_crtc_state *imx_crtc_state = to_imx_crtc_state(crtc_state);
 	struct drm_display_info *di = &conn_state->connector->display_info;
 	struct imx_parallel_display *imxpd = enc_to_imxpd(encoder);
-
 	if (!imxpd->bus_format && di->num_bus_formats) {
 		imx_crtc_state->bus_flags = di->bus_flags;
 		imx_crtc_state->bus_format = di->bus_formats[0];
@@ -128,6 +132,12 @@ static int imx_pd_encoder_atomic_check(struct drm_encoder *encoder,
 		imx_crtc_state->bus_flags = imxpd->bus_flags;
 		imx_crtc_state->bus_format = imxpd->bus_format;
 	}
+
+#if 1
+	/* Hack to make displays with positive picelclock work */
+		imx_crtc_state->bus_flags = di->bus_flags;
+#endif
+
 	imx_crtc_state->di_hsync_pin = 2;
 	imx_crtc_state->di_vsync_pin = 3;
 
@@ -183,7 +193,7 @@ static int imx_pd_register(struct drm_device *drm,
 				&imx_pd_connector_helper_funcs);
 		drm_connector_init(drm, &imxpd->connector,
 				   &imx_pd_connector_funcs,
-				   DRM_MODE_CONNECTOR_VGA);
+				   DRM_MODE_CONNECTOR_DPI);
 	}
 
 	if (imxpd->panel)
