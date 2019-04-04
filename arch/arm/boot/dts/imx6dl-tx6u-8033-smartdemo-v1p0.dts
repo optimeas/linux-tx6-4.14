@@ -129,6 +129,13 @@
 	status = "okay";
 };
 
+&i2c1 {
+	i2c_rtc: rv4162@68 {
+		compatible = "mc,rv4162";
+		reg = <0x68>;
+	};
+};
+
 &iomuxc {
 	pinctrl_usdhc4: usdhc4grp {
 		fsl,pins = <
