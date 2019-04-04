@@ -58,6 +58,9 @@
 		regulator-max-microvolt = <3300000>;
 		regulator-always-on;
 	};
+
+	/delete-node/ sound;
+	/delete-node/ gpio-keys;
 };
 
 
@@ -74,6 +77,14 @@
 			remote-endpoint = <&lcd_out>;
 		};
 	};
+};
+
+&sgtl5000 {
+	status = "disabled";
+};
+
+&kpp {
+	status = "disabled";
 };
 
 &ds1339 {
