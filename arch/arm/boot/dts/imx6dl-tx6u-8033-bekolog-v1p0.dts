@@ -125,6 +125,11 @@
 	status = "okay";
 };
 
+&usdhc1 {
+	non-removable;
+	status = "okay";
+};
+
 &iomuxc {
 	pinctrl_usdhc4: usdhc4grp {
 		fsl,pins = <
