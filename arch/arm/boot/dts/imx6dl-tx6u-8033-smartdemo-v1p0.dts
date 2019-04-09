@@ -79,6 +79,17 @@
 	};
 };
 
+&uart2 {
+	pinctrl-0 = <&pinctrl_uart2 &pinctrl_uart2_rtscts>;
+	fsl,uart-has-rtscts;
+    linux,rs485-enabled-at-boot-time;
+};
+
+&uart3 {
+	pinctrl-0 = <&pinctrl_uart3 &pinctrl_uart3_rtscts>;
+	fsl,uart-has-rtscts;
+    linux,rs485-enabled-at-boot-time;};
+
 &sgtl5000 {
 	status = "disabled";
 };
