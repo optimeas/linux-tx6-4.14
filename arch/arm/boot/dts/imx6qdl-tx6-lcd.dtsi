@@ -162,7 +162,7 @@
 			};
 
 			ET0430 {
-				u-boot,panel-name = "edt,et0430g0dh6";
+				u-boot,panel-name = "edt,etm0430g8edh6";
 				clock-frequency = <9009000>;
 				hactive = <480>;
 				vactive = <272>;
