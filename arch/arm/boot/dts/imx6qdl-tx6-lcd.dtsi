@@ -174,7 +174,7 @@
 				vfront-porch = <2>;
 				hsync-active = <0>;
 				vsync-active = <0>;
-				de-active = <1>;
+				de-active = <0>;
 				pixelclk-active = <1>;
 			};
 
@@ -227,7 +227,7 @@
 				pixelclk-active = <0>;
 			};
 
-			CoMTFT { /* same as ET0700 but with inverted pixel clock */
+			COMTFT { /* same as ET0700 but with inverted pixel clock */
 				u-boot,panel-name = "edt,etm0700g0edh6";
 				clock-frequency = <33264000>;
 				hactive = <800>;

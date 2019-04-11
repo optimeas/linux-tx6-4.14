@@ -63,7 +63,6 @@
 	/delete-node/ gpio-keys;
 };
 
-
 &lcd_panel {
 	compatible = "edt,etm0430g8edh6";
 	pinctrl-names = "default";

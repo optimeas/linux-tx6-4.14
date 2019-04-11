@@ -59,12 +59,9 @@ static int imx_pd_connector_get_modes(struct drm_connector *connector)
 	if (imxpd->panel && imxpd->panel->funcs &&
 	    imxpd->panel->funcs->get_modes) {
 		num_modes = imxpd->panel->funcs->get_modes(imxpd->panel);
-#if 1
-	/* Make sure to get mode from DRM */
-#else
+
 	if (num_modes > 0)
 		return num_modes;
-#endif
 	}
 
 	if (imxpd->edid) {
@@ -82,6 +79,7 @@ static int imx_pd_connector_get_modes(struct drm_connector *connector)
 		ret = of_get_drm_display_mode(np, &imxpd->mode,
 					      &imxpd->bus_flags,
 					      OF_USE_NATIVE_MODE);
+
 		if (ret)
 			return ret;
 
@@ -135,6 +133,7 @@ static int imx_pd_encoder_atomic_check(struct drm_encoder *encoder,
 
 #if 1
 	/* Hack to make displays with positive picelclock work */
+	if (!imx_crtc_state->bus_flags)
 		imx_crtc_state->bus_flags = di->bus_flags;
 #endif
 
