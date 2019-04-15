@@ -88,7 +88,8 @@
 &uart3 {
 	pinctrl-0 = <&pinctrl_uart3 &pinctrl_uart3_rtscts>;
 	fsl,uart-has-rtscts;
-    linux,rs485-enabled-at-boot-time;};
+    linux,rs485-enabled-at-boot-time;
+};
 
 &sgtl5000 {
 	status = "disabled";
@@ -146,6 +147,11 @@
 		reg = <0x68>;
 	};
 };
+
+&can1 {
+	status = "disabled";
+};
+
 
 &iomuxc {
 	pinctrl_usdhc4: usdhc4grp {
