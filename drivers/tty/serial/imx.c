@@ -2058,6 +2058,16 @@ static int serial_imx_probe_dt(struct imx_port *sport,
 		sport->port.rs485.flags |= SER_RS485_ENABLED;
 	}
 
+	if (of_property_read_bool(np, "rs485-rts-active-low")) {
+		dev_info(&pdev->dev, "rs485 use RTS active low.\n");
+		sport->port.rs485.flags &= ~SER_RS485_RTS_ON_SEND;
+		sport->port.rs485.flags |= SER_RS485_RTS_AFTER_SEND;
+	}
+    else {
+		dev_info(&pdev->dev, "rs485 use RTS active high.\n");
+		sport->port.rs485.flags |= SER_RS485_RTS_ON_SEND;
+    }
+
 	if (of_get_property(np, "rs485-rx-during-tx", NULL))
 		sport->port.rs485.flags |= SER_RS485_RX_DURING_TX;
 
@@ -2128,7 +2138,7 @@ static int serial_imx_probe(struct platform_device *pdev)
 	sport->port.fifosize = 32;
 	sport->port.ops = &imx_pops;
 	sport->port.rs485_config = imx_rs485_config;
-	sport->port.rs485.flags |= SER_RS485_RTS_ON_SEND;
+/*	sport->port.rs485.flags |= SER_RS485_RTS_ON_SEND; */
 	sport->port.flags = UPF_BOOT_AUTOCONF;
 	init_timer(&sport->timer);
 	sport->timer.function = imx_timeout;
