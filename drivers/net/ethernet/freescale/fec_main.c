@@ -1845,7 +1845,7 @@ static int fec_enet_mdio_write(struct mii_bus *bus, int mii_id, int regnum,
 	return ret;
 }
 
-static void fec_reset_phy(struct fec_enet_private *fep);
+static int fec_reset_phy(struct platform_device *pdev);
 
 static int fec_enet_clk_enable(struct net_device *ndev, bool enable)
 {
@@ -1862,7 +1862,7 @@ static int fec_enet_clk_enable(struct net_device *ndev, bool enable)
 			if (ret)
 				goto failed_clk_enet_out;
 
-			fec_reset_phy(fep);
+			fec_reset_phy(fep->pdev);
 		}
 
 		if (fep->clk_ptp) {
