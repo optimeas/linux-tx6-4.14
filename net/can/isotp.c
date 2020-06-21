@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: ((GPL-2.0 WITH Linux-syscall-note) OR BSD-3-Clause) */
 /*
  * isotp.c - ISO 15765-2 CAN transport protocol for protocol family CAN
  *
@@ -65,6 +66,12 @@
 #include <linux/skbuff.h>
 #include <linux/can.h>
 #include <linux/can/core.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,9,0)
+#include <linux/can/skb.h>
+#define CAN_SKBRES sizeof(struct can_skb_priv)
+#else
+#define CAN_SKBRES 0
+#endif
 #include <linux/can/isotp.h>
 #include <net/sock.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24)
@@ -74,13 +81,13 @@
 #include "compat.h"
 #endif
 
-#define CAN_ISOTP_VERSION "20170725"
+#define CAN_ISOTP_VERSION "20181217"
 static __initdata const char banner[] =
 	KERN_INFO "can: isotp protocol (rev " CAN_ISOTP_VERSION " alpha)\n";
 
-MODULE_DESCRIPTION("PF_CAN isotp 15765-2 protocol");
+MODULE_DESCRIPTION("PF_CAN isotp 15765-2:2016 protocol");
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_AUTHOR("Oliver Hartkopp <oliver.hartkopp@volkswagen.de>");
+MODULE_AUTHOR("Oliver Hartkopp <socketcan@hartkopp.net>");
 MODULE_ALIAS("can-proto-6");
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
@@ -97,7 +104,7 @@ MODULE_ALIAS("can-proto-6");
 			 (CAN_SFF_MASK | CAN_EFF_FLAG | CAN_RTR_FLAG))
 
 /*
-  ISO 15765-2:2015 supports more than 4095 byte per ISO PDU as the FF_DL can
+  ISO 15765-2:2016 supports more than 4095 byte per ISO PDU as the FF_DL can
   take full 32 bit values (4 Gbyte). We would need some good concept to handle
   this between user space and kernel space. For now increase the static buffer
   to something about 8 kbyte to be able to test this new functionality.
@@ -181,6 +188,17 @@ static enum hrtimer_restart isotp_rx_timer_handler(struct hrtimer *hrtimer)
 	return HRTIMER_NORESTART;
 }
 
+static void isotp_skb_reserve(struct sk_buff *skb, struct net_device *dev)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,9,0)
+	can_skb_reserve(skb);
+	can_skb_prv(skb)->ifindex = dev->ifindex;
+#endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,1,5)
+	can_skb_prv(skb)->skbcnt = 0;
+#endif
+}
+
 static void isotp_skb_destructor(struct sk_buff *skb)
 {
 	sock_put(skb->sk);
@@ -202,7 +220,7 @@ static int isotp_send_fc(struct sock *sk, int ae, u8 flowstatus)
 	struct canfd_frame *ncf;
 	struct isotp_sock *so = isotp_sk(sk);
 
-	nskb = alloc_skb(so->ll.mtu, gfp_any());
+	nskb = alloc_skb(so->ll.mtu + CAN_SKBRES, gfp_any());
 	if (!nskb)
 		return 1;
 
@@ -211,6 +229,7 @@ static int isotp_send_fc(struct sock *sk, int ae, u8 flowstatus)
 		kfree_skb(nskb);
 		return 1;
 	}
+	isotp_skb_reserve(nskb, dev);
 	nskb->dev = dev;
 	isotp_skb_set_owner(nskb, sk);
 	ncf = (struct canfd_frame *) nskb->data;
@@ -775,12 +794,13 @@ static void isotp_tx_timer_tsklet(unsigned long data)
 			break;
 
 isotp_tx_burst:
-		skb = alloc_skb(so->ll.mtu, gfp_any());
+		skb = alloc_skb(so->ll.mtu + CAN_SKBRES, gfp_any());
 		if (!skb) {
 			dev_put(dev);
 			break;
 		}
 
+		isotp_skb_reserve(skb, dev);
 		cf = (struct canfd_frame *)skb->data;
 		skb_put(skb, so->ll.mtu);
 
@@ -892,12 +912,14 @@ static int isotp_sendmsg(struct kiocb *iocb, struct socket *sock,
 	if (!dev)
 		return -ENXIO;
 
-	skb = sock_alloc_send_skb(sk, so->ll.mtu,
+	skb = sock_alloc_send_skb(sk, so->ll.mtu + CAN_SKBRES,
 				  msg->msg_flags & MSG_DONTWAIT, &err);
 	if (!skb) {
 		dev_put(dev);
 		return err;
 	}
+
+	isotp_skb_reserve(skb, dev);
 
 	so->tx.state = ISOTP_SENDING;
 	so->tx.len = size;
@@ -1074,7 +1096,11 @@ static int isotp_bind(struct socket *sock, struct sockaddr *uaddr, int len)
 	int err = 0;
 	int notify_enetdown = 0;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,4,0)
+	if (len < CAN_REQUIRED_SIZE(struct sockaddr_can, can_addr.tp))
+#else
 	if (len < sizeof(*addr))
+#endif
 		return -EINVAL;
 
 	if (addr->can_addr.tp.rx_id == addr->can_addr.tp.tx_id)
@@ -1121,7 +1147,9 @@ static int isotp_bind(struct socket *sock, struct sockaddr *uaddr, int len)
 #endif
 			SINGLE_MASK(addr->can_addr.tp.rx_id), isotp_rcv, sk,
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,9,11)) || \
-	((LINUX_VERSION_CODE >= KERNEL_VERSION(4,4,50)) && (LINUX_VERSION_CODE < KERNEL_VERSION(4, 5, 0)))
+	((LINUX_VERSION_CODE >= KERNEL_VERSION(4,4,50)) && (LINUX_VERSION_CODE < KERNEL_VERSION(4, 5, 0))) || \
+	((LINUX_VERSION_CODE >= KERNEL_VERSION(3,18,49)) && (LINUX_VERSION_CODE < KERNEL_VERSION(3, 19, 0))) || \
+	((LINUX_VERSION_CODE >= KERNEL_VERSION(3,16,42)) && (LINUX_VERSION_CODE < KERNEL_VERSION(3, 17, 0)))
 			"isotp", sk);
 #else
 			"isotp");
@@ -1437,41 +1465,54 @@ static int isotp_init(struct sock *sk)
 	return 0;
 }
 
+int isotp_sock_no_ioctlcmd(struct socket *sock, unsigned int cmd,
+			 unsigned long arg)
+{
+	/* no ioctls for socket layer -> hand it down to NIC layer */
+	return -ENOIOCTLCMD;
+}
+
 static const struct proto_ops isotp_ops = {
-	.family        = PF_CAN,
-	.release       = isotp_release,
-	.bind          = isotp_bind,
-	.connect       = sock_no_connect,
-	.socketpair    = sock_no_socketpair,
-	.accept        = sock_no_accept,
-	.getname       = isotp_getname,
-	.poll          = datagram_poll,
-	.ioctl         = can_ioctl,	/* use can_ioctl() from af_can.c */
-	.listen        = sock_no_listen,
-	.shutdown      = sock_no_shutdown,
-	.setsockopt    = isotp_setsockopt,
-	.getsockopt    = isotp_getsockopt,
-	.sendmsg       = isotp_sendmsg,
-	.recvmsg       = isotp_recvmsg,
-	.mmap          = sock_no_mmap,
-	.sendpage      = sock_no_sendpage,
+	.family		= PF_CAN,
+	.release	= isotp_release,
+	.bind		= isotp_bind,
+	.connect	= sock_no_connect,
+	.socketpair	= sock_no_socketpair,
+	.accept		= sock_no_accept,
+	.getname	= isotp_getname,
+	.poll		= datagram_poll,
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0)
+	.ioctl		= isotp_sock_no_ioctlcmd,
+	.gettstamp	= sock_gettstamp,
+#else
+	.ioctl		= can_ioctl,	/* use can_ioctl() from af_can.c */
+#endif
+	.listen		= sock_no_listen,
+	.shutdown	= sock_no_shutdown,
+	.setsockopt	= isotp_setsockopt,
+	.getsockopt	= isotp_getsockopt,
+	.sendmsg	= isotp_sendmsg,
+	.recvmsg	= isotp_recvmsg,
+	.mmap		= sock_no_mmap,
+	.sendpage	= sock_no_sendpage,
 };
 
 static struct proto isotp_proto __read_mostly = {
-	.name       = "CAN_ISOTP",
-	.owner      = THIS_MODULE,
-	.obj_size   = sizeof(struct isotp_sock),
-	.init       = isotp_init,
+	.name		= "CAN_ISOTP",
+	.owner		= THIS_MODULE,
+	.obj_size	= sizeof(struct isotp_sock),
+	.init		= isotp_init,
 };
 
 static const struct can_proto isotp_can_proto = {
-	.type       = SOCK_DGRAM,
-	.protocol   = CAN_ISOTP,
+	.type		= SOCK_DGRAM,
+	.protocol	= CAN_ISOTP,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,33)
-	.capability = -1,
+	.capability	= -1,
 #endif
-	.ops        = &isotp_ops,
-	.prot       = &isotp_proto,
+	.ops		= &isotp_ops,
+	.prot		= &isotp_proto,
 };
 
 static __init int isotp_module_init(void)
