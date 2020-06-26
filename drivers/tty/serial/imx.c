@@ -8,6 +8,10 @@
  * Copyright (C) 2004 Pengutronix
  */
 
+#if defined(CONFIG_SERIAL_IMX_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
+#define SUPPORT_SYSRQ
+#endif
+
 #include <linux/module.h>
 #include <linux/ioport.h>
 #include <linux/init.h>
@@ -786,7 +790,9 @@ static irqreturn_t __imx_uart_rxint(int irq, void *dev_id)
 			if (rx & URXD_OVRRUN)
 				flg = TTY_OVERRUN;
 
+#ifdef SUPPORT_SYSRQ
 			sport->port.sysrq = 0;
+#endif
 		}
 
 		if (sport->port.ignore_status_mask & URXD_DUMMY_READ)
@@ -2196,6 +2202,15 @@ static int imx_uart_probe_dt(struct imx_port *sport,
 	if (of_get_property(np, "fsl,inverted-rx", NULL))
 		sport->inverted_rx = 1;
 
+
+	if (of_property_read_bool(np, "linux,rs485-enabled-at-boot-time")) {
+		dev_info(&pdev->dev, "rs485 enabled at boot time.\n");
+		sport->port.rs485.flags |= SER_RS485_ENABLED;
+	}
+
+	if (of_get_property(np, "rs485-rx-during-tx", NULL))
+		sport->port.rs485.flags |= SER_RS485_RX_DURING_TX;
+
 	return 0;
 }
 #else
@@ -2252,8 +2267,8 @@ static int imx_uart_probe(struct platform_device *pdev)
 		return PTR_ERR(base);
 
 	rxirq = platform_get_irq(pdev, 0);
-	txirq = platform_get_irq_optional(pdev, 1);
-	rtsirq = platform_get_irq_optional(pdev, 2);
+	txirq = platform_get_irq(pdev, 1);
+	rtsirq = platform_get_irq(pdev, 2);
 
 	sport->port.dev = &pdev->dev;
 	sport->port.mapbase = res->start;
@@ -2262,7 +2277,6 @@ static int imx_uart_probe(struct platform_device *pdev)
 	sport->port.iotype = UPIO_MEM;
 	sport->port.irq = rxirq;
 	sport->port.fifosize = 32;
-	sport->port.has_sysrq = IS_ENABLED(CONFIG_SERIAL_IMX_CONSOLE);
 	sport->port.ops = &imx_uart_pops;
 	sport->port.rs485_config = imx_uart_rs485_config;
 	sport->port.flags = UPF_BOOT_AUTOCONF;
@@ -2301,8 +2315,6 @@ static int imx_uart_probe(struct platform_device *pdev)
 	sport->ucr3 = readl(sport->port.membase + UCR3);
 	sport->ucr4 = readl(sport->port.membase + UCR4);
 	sport->ufcr = readl(sport->port.membase + UFCR);
-
-	uart_get_rs485_mode(&pdev->dev, &sport->port.rs485);
 
 	if (sport->port.rs485.flags & SER_RS485_ENABLED &&
 	    (!sport->have_rtscts && !sport->have_rtsgpio))
