@@ -143,8 +143,6 @@
 #define		MT9V032_AGC_ENABLE			(1 << 1)
 #define MT9V034_AEC_MAX_SHUTTER_WIDTH			0xad
 #define MT9V032_AEC_MAX_SHUTTER_WIDTH			0xbd
-#define MT9V024_LVDS_MASTER_CONTROL                    0xb1
-#define MT9V024_LVDS_DATA_CONTROL                      0xb3
 #define MT9V032_THERMAL_INFO				0xc1
 
 enum mt9v032_model {
@@ -173,7 +171,6 @@ struct mt9v032_model_data {
 	unsigned int pclk_reg;
 	unsigned int aec_max_shutter_reg;
 	const struct v4l2_ctrl_config * const aec_max_shutter_v4l2_ctrl;
-	unsigned int row_noise;
 };
 
 struct mt9v032_model_info {
@@ -185,16 +182,6 @@ static const struct mt9v032_model_version mt9v032_versions[] = {
 	{ MT9V032_CHIP_ID_REV1, "MT9V022/MT9V032 rev1/2" },
 	{ MT9V032_CHIP_ID_REV3, "MT9V022/MT9V032 rev3" },
 	{ MT9V034_CHIP_ID_REV1, "MT9V024/MT9V034 rev1" },
-};
-
-static const u32 mt9v032_color_fmts[] = {
-	MEDIA_BUS_FMT_SGRBG8_1X8,
-	MEDIA_BUS_FMT_SGRBG10_1X10,
-};
-
-static const u32 mt9v032_monochrome_fmts[] = {
-	MEDIA_BUS_FMT_Y8_1X8,
-	MEDIA_BUS_FMT_Y10_1X10,
 };
 
 struct mt9v032 {
@@ -223,13 +210,10 @@ struct mt9v032 {
 	struct mt9v032_platform_data *pdata;
 	const struct mt9v032_model_info *model;
 	const struct mt9v032_model_version *version;
-	const u32 *fmts;
-	int num_fmts;
 
 	u32 sysclk;
 	u16 aec_agc;
 	u16 hblank;
-	bool row_noise_corr;
 	struct {
 		struct v4l2_ctrl *test_pattern;
 		struct v4l2_ctrl *test_pattern_color;
@@ -347,20 +331,8 @@ static int __mt9v032_set_power(struct mt9v032 *mt9v032, bool on)
 			return ret;
 	}
 
-	/* HACK: Always enable the serial output interface */
-        ret = regmap_write(map, MT9V024_LVDS_MASTER_CONTROL, 0);
-        if (ret < 0)
-                return ret;
-
-        ret = regmap_write(map, MT9V024_LVDS_DATA_CONTROL, 0);
-        if (ret < 0)
-                return ret;
-
-	/* Configure the noise correction algorithm and restore the controls. */
-	ret = regmap_write(map, MT9V032_ROW_NOISE_CORR_CONTROL,
-			   mt9v032->row_noise_corr ?
-			   mt9v032->model->data->row_noise : 0);
-
+	/* Disable the noise correction algorithm and restore the controls. */
+	ret = regmap_write(map, MT9V032_ROW_NOISE_CORR_CONTROL, 0);
 	if (ret < 0)
 		return ret;
 
@@ -447,28 +419,16 @@ static int mt9v032_s_stream(struct v4l2_subdev *subdev, int enable)
 	return regmap_update_bits(map, MT9V032_CHIP_CONTROL, mode, mode);
 }
 
-static const u32 mt9v032_find_datafmt(struct mt9v032 *mt9v032, u32 code)
-{
-	const u32 *fmt = mt9v032->fmts;
-	int i;
-
-	for (i=0; i < mt9v032->num_fmts; i++)
-		if (fmt[i] == code)
-			return fmt[i];
-
-	return fmt[1];
-}
-
 static int mt9v032_enum_mbus_code(struct v4l2_subdev *subdev,
 				  struct v4l2_subdev_pad_config *cfg,
 				  struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct mt9v032 *mt9v032 = to_mt9v032(subdev);
 
-	if (code->index >= mt9v032->num_fmts)
+	if (code->index > 0)
 		return -EINVAL;
 
-	code->code = mt9v032->fmts[code->index];
+	code->code = mt9v032->format.code;
 	return 0;
 }
 
@@ -476,7 +436,11 @@ static int mt9v032_enum_frame_size(struct v4l2_subdev *subdev,
 				   struct v4l2_subdev_pad_config *cfg,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
-	if (fse->index >= 3 || fse->code != MEDIA_BUS_FMT_SGRBG10_1X10)
+	struct mt9v032 *mt9v032 = to_mt9v032(subdev);
+
+	if (fse->index >= 3)
+		return -EINVAL;
+	if (mt9v032->format.code != fse->code)
 		return -EINVAL;
 
 	fse->min_width = MT9V032_WINDOW_WIDTH_DEF / (1 << fse->index);
@@ -554,8 +518,6 @@ static int mt9v032_set_format(struct v4l2_subdev *subdev,
 					    format->which);
 	__format->width = __crop->width / hratio;
 	__format->height = __crop->height / vratio;
-
-	__format->code = mt9v032_find_datafmt(mt9v032, format->format.code);
 
 	if (format->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
 		mt9v032->hratio = hratio;
@@ -670,10 +632,6 @@ static int mt9v032_set_selection(struct v4l2_subdev *subdev,
  * Maximum shutter width used for AEC.
  */
 #define V4L2_CID_AEC_MAX_SHUTTER_WIDTH	(V4L2_CID_USER_BASE | 0x1007)
-/*
- * Row Noize Correction enable.
- */
-#define V4L2_CID_ROW_NOISE_CORRECTION	(V4L2_CID_USER_BASE | 0x1008)
 
 static int mt9v032_s_ctrl(struct v4l2_ctrl *ctrl)
 {
@@ -765,9 +723,6 @@ static int mt9v032_s_ctrl(struct v4l2_ctrl *ctrl)
 		return regmap_write(map,
 				    mt9v032->model->data->aec_max_shutter_reg,
 				    ctrl->val);
-	case V4L2_CID_ROW_NOISE_CORRECTION:
-		mt9v032->row_noise_corr = ctrl->val;
-		break;
 	}
 
 	return 0;
@@ -848,16 +803,6 @@ static const struct v4l2_ctrl_config mt9v032_aegc_controls[] = {
 		.step		= 1,
 		.def		= 2,
 		.flags		= 0,
-	}, {
-		.ops		= &mt9v032_ctrl_ops,
-		.id		= V4L2_CID_ROW_NOISE_CORRECTION,
-		.type		= V4L2_CTRL_TYPE_BOOLEAN,
-		.name		= "Row Noise Correction",
-		.min		= 0,
-		.max		= 1,
-		.step		= 1,
-		.def		= 0,
-		.flags		= 0,
 	}
 };
 
@@ -913,30 +858,6 @@ done:
 	mutex_unlock(&mt9v032->power_lock);
 	return ret;
 }
-
-#ifdef CONFIG_VIDEO_ADV_DEBUG
-static int mt9v032_g_register(struct v4l2_subdev *sd,
-			      struct v4l2_dbg_register *reg)
-{
-	struct mt9v032 *mt9v032 = to_mt9v032(sd);
-	int val, ret;
-
-	ret = regmap_read(mt9v032->regmap, reg->reg, &val);
-	if (ret < 0)
-		return ret;
-
-	reg->val = val;
-	return 0;
-}
-
-static int mt9v032_s_register(struct v4l2_subdev *sd,
-			      struct v4l2_dbg_register const *reg)
-{
-	struct mt9v032 *mt9v032 = to_mt9v032(sd);
-
-	return regmap_write(mt9v032->regmap, reg->reg, reg->val);
-}
-#endif
 
 /* -----------------------------------------------------------------------------
  * V4L2 subdev internal operations
@@ -1003,7 +924,10 @@ static int mt9v032_open(struct v4l2_subdev *subdev, struct v4l2_subdev_fh *fh)
 
 	format = v4l2_subdev_get_try_format(subdev, fh->pad, 0);
 
-	format->code = mt9v032_find_datafmt(mt9v032, 0);
+	if (mt9v032->model->color)
+		format->code = MEDIA_BUS_FMT_SGRBG10_1X10;
+	else
+		format->code = MEDIA_BUS_FMT_Y10_1X10;
 
 	format->width = MT9V032_WINDOW_WIDTH_DEF;
 	format->height = MT9V032_WINDOW_HEIGHT_DEF;
@@ -1020,10 +944,6 @@ static int mt9v032_close(struct v4l2_subdev *subdev, struct v4l2_subdev_fh *fh)
 
 static const struct v4l2_subdev_core_ops mt9v032_subdev_core_ops = {
 	.s_power	= mt9v032_set_power,
-#ifdef CONFIG_VIDEO_ADV_DEBUG
-	.s_register	= mt9v032_s_register,
-	.g_register	= mt9v032_g_register,
-#endif
 };
 
 static const struct v4l2_subdev_video_ops mt9v032_subdev_video_ops = {
@@ -1218,14 +1138,10 @@ static int mt9v032_probe(struct i2c_client *client,
 	mt9v032->crop.width = MT9V032_WINDOW_WIDTH_DEF;
 	mt9v032->crop.height = MT9V032_WINDOW_HEIGHT_DEF;
 
-	if (mt9v032->model->color) {
-		mt9v032->fmts = mt9v032_color_fmts;
-		mt9v032->num_fmts = ARRAY_SIZE(mt9v032_color_fmts);
-	} else {
-		mt9v032->fmts = mt9v032_monochrome_fmts;
-		mt9v032->num_fmts = ARRAY_SIZE(mt9v032_monochrome_fmts);
-	}
-	mt9v032->format.code = mt9v032_find_datafmt(mt9v032, 0);
+	if (mt9v032->model->color)
+		mt9v032->format.code = MEDIA_BUS_FMT_SGRBG10_1X10;
+	else
+		mt9v032->format.code = MEDIA_BUS_FMT_Y10_1X10;
 
 	mt9v032->format.width = MT9V032_WINDOW_WIDTH_DEF;
 	mt9v032->format.height = MT9V032_WINDOW_HEIGHT_DEF;
@@ -1242,7 +1158,6 @@ static int mt9v032_probe(struct i2c_client *client,
 	v4l2_i2c_subdev_init(&mt9v032->subdev, client, &mt9v032_subdev_ops);
 	mt9v032->subdev.internal_ops = &mt9v032_subdev_internal_ops;
 	mt9v032->subdev.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
-	mt9v032->subdev.entity.function = MEDIA_ENT_F_CAM_SENSOR;
 
 	mt9v032->pad.flags = MEDIA_PAD_FL_SOURCE;
 	ret = media_entity_pads_init(&mt9v032->subdev.entity, 1, &mt9v032->pad);
@@ -1286,7 +1201,6 @@ static const struct mt9v032_model_data mt9v032_model_data[] = {
 		.pclk_reg = MT9V032_PIXEL_CLOCK,
 		.aec_max_shutter_reg = MT9V032_AEC_MAX_SHUTTER_WIDTH,
 		.aec_max_shutter_v4l2_ctrl = &mt9v032_aec_max_shutter_width,
-		.row_noise = MT9V032_ROW_NOISE_CORR_ENABLE,
 	}, {
 		/* MT9V024, MT9V034 */
 		.min_row_time = 690,
@@ -1298,7 +1212,6 @@ static const struct mt9v032_model_data mt9v032_model_data[] = {
 		.pclk_reg = MT9V034_PIXEL_CLOCK,
 		.aec_max_shutter_reg = MT9V034_AEC_MAX_SHUTTER_WIDTH,
 		.aec_max_shutter_v4l2_ctrl = &mt9v034_aec_max_shutter_width,
-		.row_noise = MT9V034_ROW_NOISE_CORR_ENABLE,
 	},
 };
 
