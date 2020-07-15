@@ -727,6 +727,13 @@ static const struct regmap_range da9062_aa_writeable_ranges[] = {
 		.range_min = DA9062AA_BBAT_CONT,
 		.range_max = DA9062AA_BBAT_CONT,
 	}, {
+		.range_min = DA9062AA_CONFIG_J,
+		.range_max = DA9062AA_CONFIG_J,
+	}, {
+		/* CONFIG_I must be writable to set WATCHDOG_SD */
+		.range_min = DA9062AA_CONFIG_I,
+		.range_max = DA9062AA_CONFIG_I,
+	}, {
 		.range_min = DA9062AA_GP_ID_0,
 		.range_max = DA9062AA_GP_ID_19,
 	},
@@ -766,6 +773,12 @@ static const struct regmap_range da9062_aa_volatile_ranges[] = {
 	}, {
 		.range_min = DA9062AA_EN_32K,
 		.range_max = DA9062AA_EN_32K,
+	}, {
+		.range_min = DA9062AA_VBUCK2_A,
+		.range_max = DA9062AA_VBUCK4_A,
+	}, {
+		.range_min = DA9062AA_VBUCK3_A,
+		.range_max = DA9062AA_VBUCK3_A,
 	},
 };
 
@@ -843,6 +856,7 @@ static int da9062_i2c_probe(struct i2c_client *i2c,
 
 	i2c_set_clientdata(i2c, chip);
 	chip->dev = &i2c->dev;
+	chip->i2c = i2c;
 
 	if (!i2c->irq) {
 		dev_err(chip->dev, "No IRQ configured\n");
@@ -894,6 +908,14 @@ static int da9062_i2c_probe(struct i2c_client *i2c,
 	}
 
 	irq_base = regmap_irq_chip_get_base(chip->regmap_irq);
+
+	/* Set bit 6 (TWOWIRE_TO) of register 0x10F (DA9062AA_CONFIG_J) to 0:
+	 *    Disables automatic reset of 2-WIRE-IF
+	 */
+	ret = regmap_update_bits(chip->regmap, DA9062AA_CONFIG_J, 0x40, 0x0);
+	if (ret < 0)
+		dev_warn(chip->dev, "Cannot disable i2c reset timeout (%d)\n",
+			 ret);
 
 	ret = mfd_add_devices(chip->dev, PLATFORM_DEVID_NONE, cell,
 			      cell_num, NULL, irq_base,

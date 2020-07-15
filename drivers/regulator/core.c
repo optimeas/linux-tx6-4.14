@@ -2952,7 +2952,7 @@ static int regulator_set_voltage_unlocked(struct regulator *regulator,
 	if (rdev->supply &&
 	    regulator_ops_is_valid(rdev->supply->rdev,
 				   REGULATOR_CHANGE_VOLTAGE) &&
-	    (rdev->desc->min_dropout_uV || !(rdev->desc->ops->get_voltage ||
+	    (rdev->desc->min_dropout_uV >= 0 || !(rdev->desc->ops->get_voltage ||
 					   rdev->desc->ops->get_voltage_sel))) {
 		int current_supply_uV;
 		int selector;
@@ -3515,6 +3515,52 @@ int regulator_allow_bypass(struct regulator *regulator, bool enable)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(regulator_allow_bypass);
+
+/**
+ * regulator_set_bypass - set the regulator into bypass mode
+ *
+ * @regulator: Regulator to configure
+ * @enable: enable or disable bypass mode
+ *
+ * Set the regulator into bypass mode if the machine constraints allow this
+ * and even if not all consumers allow it. A valid supply needs to be present
+ * to be able to set bypass mode.
+ * Bypass mode means that the regulator is simply passing the input directly
+ * to the output with no regulation.
+ */
+int regulator_set_bypass(struct regulator *regulator, bool enable)
+{
+	struct regulator_dev *rdev = regulator->rdev;
+	const char *supply_name;
+	int ret = 0;
+
+	if (!rdev->desc->ops->set_bypass)
+		return -EPERM;
+
+	if (!regulator_ops_is_valid(rdev, REGULATOR_CHANGE_BYPASS))
+		return -EPERM;
+
+	if (!rdev->supply) {
+		return -EPERM;
+	} else {
+		supply_name = rdev->supply->rdev->desc->name;
+		if (strcmp(supply_name, "regulator-dummy") == 0)
+			return -EPERM;
+	}
+
+	mutex_lock(&rdev->mutex);
+
+	if ((enable && !regulator->bypass) ||
+	    (!enable && regulator->bypass))
+		ret = rdev->desc->ops->set_bypass(rdev, enable);
+
+	if (!ret)
+		regulator->bypass = enable;
+
+	mutex_unlock(&rdev->mutex);
+
+	return ret;
+}
 
 /**
  * regulator_register_notifier - register regulator event notifier

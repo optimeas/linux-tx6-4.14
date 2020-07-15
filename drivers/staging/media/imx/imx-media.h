@@ -35,8 +35,6 @@
 #define IMX_MEDIA_MAX_SUBDEVS       32
 /* max pads per subdev */
 #define IMX_MEDIA_MAX_PADS          16
-/* max links per pad */
-#define IMX_MEDIA_MAX_LINKS          8
 
 /*
  * Pad definitions for the subdevs with multiple source or
@@ -51,9 +49,6 @@ enum {
 	CSI_NUM_PADS,
 };
 
-#define CSI_NUM_SINK_PADS 1
-#define CSI_NUM_SRC_PADS  2
-
 /* ipu_vdic */
 enum {
 	VDIC_SINK_PAD_DIRECT = 0,
@@ -61,9 +56,6 @@ enum {
 	VDIC_SRC_PAD_DIRECT,
 	VDIC_NUM_PADS,
 };
-
-#define VDIC_NUM_SINK_PADS 2
-#define VDIC_NUM_SRC_PADS  1
 
 /* ipu_ic_prp */
 enum {
@@ -73,18 +65,12 @@ enum {
 	PRP_NUM_PADS,
 };
 
-#define PRP_NUM_SINK_PADS 1
-#define PRP_NUM_SRC_PADS  2
-
 /* ipu_ic_prpencvf */
 enum {
 	PRPENCVF_SINK_PAD = 0,
 	PRPENCVF_SRC_PAD,
 	PRPENCVF_NUM_PADS,
 };
-
-#define PRPENCVF_NUM_SINK_PADS 1
-#define PRPENCVF_NUM_SRC_PADS  1
 
 /* How long to wait for EOF interrupts in the buffer-capture subdevs */
 #define IMX_MEDIA_EOF_TIMEOUT       1000
@@ -93,6 +79,7 @@ struct imx_media_pixfmt {
 	u32     fourcc;
 	u32     codes[4];
 	int     bpp;     /* total bpp */
+	int	cycles;  /* cycles per pixel for generic (bayer) formats when used on the parallel bus */
 	enum ipu_color_space cs;
 	bool    planar;  /* is a planar format */
 	bool    bayer;   /* is a raw bayer format */
@@ -119,19 +106,7 @@ static inline struct imx_media_buffer *to_imx_media_vb(struct vb2_buffer *vb)
 	return container_of(vbuf, struct imx_media_buffer, vbuf);
 }
 
-struct imx_media_link {
-	struct device_node *remote_sd_node;
-	char               remote_devname[32];
-	int                local_pad;
-	int                remote_pad;
-};
-
 struct imx_media_pad {
-	struct media_pad  pad;
-	struct imx_media_link link[IMX_MEDIA_MAX_LINKS];
-	bool devnode; /* does this pad link to a device node */
-	int num_links;
-
 	/*
 	 * list of video devices that can be reached from this pad,
 	 * list is only valid for source pads.
@@ -151,16 +126,11 @@ struct imx_media_subdev {
 	struct v4l2_subdev       *sd; /* set when bound */
 
 	struct imx_media_pad     pad[IMX_MEDIA_MAX_PADS];
-	int num_sink_pads;
-	int num_src_pads;
 
-	/* the platform device if this is an internal subdev */
+	/* the platform device if this is an IPU-internal subdev */
 	struct platform_device *pdev;
 	/* the devname is needed for async devname match */
 	char devname[32];
-
-	/* if this is a sensor */
-	struct v4l2_fwnode_endpoint sensor_ep;
 };
 
 struct imx_media_dev {
@@ -228,17 +198,13 @@ struct imx_media_subdev *
 imx_media_add_async_subdev(struct imx_media_dev *imxmd,
 			   struct device_node *np,
 			   struct platform_device *pdev);
-int imx_media_add_pad_link(struct imx_media_dev *imxmd,
-			   struct imx_media_pad *pad,
-			   struct device_node *remote_node,
-			   const char *remote_devname,
-			   int local_pad, int remote_pad);
 
 void imx_media_grp_id_to_sd_name(char *sd_name, int sz,
 				 u32 grp_id, int ipu_id);
 
-int imx_media_add_internal_subdevs(struct imx_media_dev *imxmd,
-				   struct imx_media_subdev *csi[4]);
+int imx_media_add_internal_subdevs(struct imx_media_dev *imxmd);
+int imx_media_create_internal_links(struct imx_media_dev *imxmd,
+				    struct imx_media_subdev *imxsd);
 void imx_media_remove_internal_subdevs(struct imx_media_dev *imxmd);
 
 struct imx_media_subdev *
@@ -251,16 +217,14 @@ int imx_media_add_video_device(struct imx_media_dev *imxmd,
 			       struct imx_media_video_dev *vdev);
 int imx_media_find_mipi_csi2_channel(struct imx_media_dev *imxmd,
 				     struct media_entity *start_entity);
+struct media_pad *
+imx_media_find_upstream_pad(struct imx_media_dev *imxmd,
+			    struct media_entity *start_entity,
+			    u32 grp_id);
 struct imx_media_subdev *
 imx_media_find_upstream_subdev(struct imx_media_dev *imxmd,
 			       struct media_entity *start_entity,
 			       u32 grp_id);
-struct imx_media_subdev *
-__imx_media_find_sensor(struct imx_media_dev *imxmd,
-			struct media_entity *start_entity);
-struct imx_media_subdev *
-imx_media_find_sensor(struct imx_media_dev *imxmd,
-		      struct media_entity *start_entity);
 
 struct imx_media_dma_buf {
 	void          *virt;
@@ -289,13 +253,12 @@ struct imx_media_fim *imx_media_fim_init(struct v4l2_subdev *sd);
 void imx_media_fim_free(struct imx_media_fim *fim);
 
 /* imx-media-of.c */
-struct imx_media_subdev *
-imx_media_of_find_subdev(struct imx_media_dev *imxmd,
-			 struct device_node *np,
-			 const char *name);
-int imx_media_of_parse(struct imx_media_dev *dev,
-		       struct imx_media_subdev *(*csi)[4],
-		       struct device_node *np);
+int imx_media_add_of_subdevs(struct imx_media_dev *dev,
+			     struct device_node *np);
+int imx_media_create_of_links(struct imx_media_dev *imxmd,
+			      struct imx_media_subdev *imxsd);
+int imx_media_create_csi_of_links(struct imx_media_dev *imxmd,
+				  struct imx_media_subdev *csi);
 
 /* imx-media-capture.c */
 struct imx_media_video_dev *
@@ -310,16 +273,14 @@ void imx_media_capture_device_set_format(struct imx_media_video_dev *vdev,
 void imx_media_capture_device_error(struct imx_media_video_dev *vdev);
 
 /* subdev group ids */
-#define IMX_MEDIA_GRP_ID_SENSOR    (1 << 8)
-#define IMX_MEDIA_GRP_ID_VIDMUX    (1 << 9)
-#define IMX_MEDIA_GRP_ID_CSI2      (1 << 10)
-#define IMX_MEDIA_GRP_ID_CSI_BIT   11
+#define IMX_MEDIA_GRP_ID_CSI2      BIT(8)
+#define IMX_MEDIA_GRP_ID_CSI_BIT   9
 #define IMX_MEDIA_GRP_ID_CSI       (0x3 << IMX_MEDIA_GRP_ID_CSI_BIT)
-#define IMX_MEDIA_GRP_ID_CSI0      (1 << IMX_MEDIA_GRP_ID_CSI_BIT)
+#define IMX_MEDIA_GRP_ID_CSI0      BIT(IMX_MEDIA_GRP_ID_CSI_BIT)
 #define IMX_MEDIA_GRP_ID_CSI1      (2 << IMX_MEDIA_GRP_ID_CSI_BIT)
-#define IMX_MEDIA_GRP_ID_VDIC      (1 << 13)
-#define IMX_MEDIA_GRP_ID_IC_PRP    (1 << 14)
-#define IMX_MEDIA_GRP_ID_IC_PRPENC (1 << 15)
-#define IMX_MEDIA_GRP_ID_IC_PRPVF  (1 << 16)
+#define IMX_MEDIA_GRP_ID_VDIC      BIT(11)
+#define IMX_MEDIA_GRP_ID_IC_PRP    BIT(12)
+#define IMX_MEDIA_GRP_ID_IC_PRPENC BIT(13)
+#define IMX_MEDIA_GRP_ID_IC_PRPVF  BIT(14)
 
 #endif

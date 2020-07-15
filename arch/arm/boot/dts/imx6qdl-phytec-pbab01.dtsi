@@ -1,37 +1,105 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 /*
- * Copyright 2013 Christian Hemp, Phytec Messtechnik GmbH
- *
- * The code contained herein is licensed under the GNU General Public
- * License. You may obtain a copy of the GNU General Public License
- * Version 2 or later at the following locations:
- *
- * http://www.opensource.org/licenses/gpl-license.html
- * http://www.gnu.org/copyleft/gpl.html
+ * Copyright (C) 2018 PHYTEC Messtechnik GmbH
+ * Author: Christian Hemp <c.hemp@phytec.de>
  */
 
 #include <dt-bindings/sound/fsl-imx-audmux.h>
+#include <dt-bindings/leds/leds-pca9532.h>
+#include "imx6qdl-phytec-lcd.dtsi"
 
 / {
+	aliases {
+		rtc0 = &i2c_rtc;
+	};
+
 	chosen {
 		linux,stdout-path = &uart4;
 	};
 
-	regulators {
-		sound_1v8: regulator@2 {
-			compatible = "regulator-fixed";
-			reg = <2>;
-			regulator-name = "i2s-audio-1v8";
-			regulator-min-microvolt = <1800000>;
-			regulator-max-microvolt = <1800000>;
+	csi_deserializer0: csi_deserializer0 {
+		compatible = "ti,scan921226h";
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_cam0switch>;
+		status = "okay";
+
+		enable-gpios = <&gpio5 20 GPIO_ACTIVE_HIGH>;
+		npwrdn-gpios = <&gpio1 24 GPIO_ACTIVE_HIGH>;
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* serial sink interface */
+		port@0 {
+			reg = <0>;
+
+			des0_in: endpoint {
+			};
 		};
 
-		sound_3v3: regulator@3 {
-			compatible = "regulator-fixed";
-			reg = <3>;
-			regulator-name = "i2s-audio-3v3";
-			regulator-min-microvolt = <3300000>;
-			regulator-max-microvolt = <3300000>;
+		/* parallel source interface */
+		port@1 {
+			reg = <1>;
+
+			des0_out: endpoint {
+			};
 		};
+	};
+
+	user-leds {
+		compatible = "gpio-leds";
+
+		user-led0 {
+			gpios = <&leddim 0 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "none";
+			default-state = "on";
+		};
+
+		user-led1 {
+			gpios = <&leddim 1 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "none";
+			default-state = "on";
+		};
+
+		user-led2 {
+			gpios = <&leddim 2 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "none";
+			default-state = "on";
+		};
+
+		user-led3 {
+			gpios = <&leddim 3 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "none";
+			default-state = "on";
+		};
+	};
+
+	sound_1v8: regulator-1v8 {
+		compatible = "regulator-fixed";
+		regulator-name = "i2s-audio-1v8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+	};
+
+	sound_3v3: regulator-3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "i2s-audio-3v3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+	};
+
+	reg_vcc_cam0: regulator-cam0 {
+		compatible = "regulator-fixed";
+		regulator-name = "VCC_CAM0";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+	};
+
+	reg_vcc_cam1: regulator-cam1 {
+		compatible = "regulator-fixed";
+		regulator-name = "VCC_CAM1";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
 	};
 
 	tlv320_mclk: oscillator {
@@ -75,7 +143,6 @@
 			clocks = <&tlv320_mclk>;
 		};
 	};
-
 };
 
 &audmux {
@@ -105,18 +172,42 @@
 	status = "okay";
 };
 
+&ecspi3 {
+	spi@1 {
+		compatible = "spidev";
+		spi-max-frequency = <57600000>;
+		reg = <1>;
+	};
+
+	spi@2 {
+		compatible = "spidev";
+		spi-max-frequency = <57600000>;
+		reg = <2>;
+	};
+};
+
 &fec {
 	status = "okay";
 };
 
+&gpio_leds {
+	user-led-gpio {
+		gpios = <&gpio2 24 GPIO_ACTIVE_HIGH>;
+		linux,default-trigger = "gpio";
+	};
+};
+
 &hdmi {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_hdmicec>;
+	ddc-i2c-bus = <&hdmi_ddc>;
 	status = "okay";
 };
 
 &i2c2 {
 	status = "okay";
 
-	codec: tlv320@18 {
+	codec: codec@18 {
 		compatible = "ti,tlv320aic3007";
 		#sound-dai-cells = <0>;
 		reg = <0x18>;
@@ -128,14 +219,68 @@
 		DVDD-supply = <&sound_1v8>;
 	};
 
-	stmpe@41 {
-		compatible = "st,stmpe811";
-		reg = <0x41>;
+        polytouch: polytouch@38 {
+		compatible = "edt,edt-ft5406", "edt,edt-ft5x06";
+		reg = <0x38>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_edt_ft5x06>;
+		interrupt-parent = <&gpio7>;
+		interrupts = <12 0>;
+		status = "disabled";
 	};
 
-	rtc@51 {
+	touchctrl@41 {
+		compatible = "st,stmpe811";
+		reg = <0x41>;
+		interrupts = <8 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-parent = <&gpio5>;
+		status = "disabled";
+
+		stmpe_touchscreen {
+			compatible = "st,stmpe-ts";
+			st,sample-time = <4>;
+			st,mod-12b = <1>;
+			st,ref-sel = <0>;
+			st,adc-freq = <1>;
+			st,ave-ctrl = <1>;
+			st,touch-det-delay = <2>;
+			st,settling = <2>;
+			st,fraction-z = <7>;
+			st,i-drive = <1>;
+		};
+	};
+
+	i2c_rtc:rtc@51 {
 		compatible = "nxp,rtc8564";
 		reg = <0x51>;
+		disable-clkout;
+	};
+
+	leddim: leddimmer@62 {
+		compatible = "nxp,pca9533";
+		gpio-controller;
+		#gpio-cells = <2>;
+		reg = <0x62>;
+
+		user1 {
+			label = "user1";
+			type = <PCA9532_TYPE_GPIO>;
+		};
+
+		user2 {
+			label = "user2";
+			type = <PCA9532_TYPE_GPIO>;
+		};
+
+		user3 {
+			label = "user3";
+			type = <PCA9532_TYPE_GPIO>;
+		};
+
+		user4 {
+			label = "user4";
+			type = <PCA9532_TYPE_GPIO>;
+		};
 	};
 
 	adc@64 {
@@ -146,6 +291,193 @@
 
 &i2c3 {
 	status = "okay";
+
+	/* VM-011 */
+	mt9p031_0: mt9p031_0@48 {
+		compatible = "aptina,mt9p031";
+		pinctrl-names = "default";
+		pinctrl-0 = <
+			&pinctrl_cam0data
+			&pinctrl_cam0clk
+		>;
+		reg = <0x48>;
+		status = "disabled";
+
+		vdd-supply = <&reg_vcc_cam0>;
+		vdd_io-supply = <&reg_vcc_cam0>;
+		vaa-supply = <&reg_vcc_cam0>;
+
+		clocks = <&clks IMX6QDL_CLK_CKO1>;
+
+		assigned-clocks =
+			<&clks IMX6QDL_CLK_CKO1_SEL>,
+			<&clks IMX6QDL_CLK_CKO>,
+			<&clks IMX6QDL_CLK_PLL4_AUDIO_DIV>;
+
+		assigned-clock-parents =
+			<&clks IMX6QDL_CLK_PLL4_AUDIO_DIV>,
+			<&clks IMX6QDL_CLK_CKO1>;
+
+		assigned-clock-rates = <0>, <0>, <216000000>;
+
+		port {
+			mt9p031_ep0: endpoint {
+				remote-endpoint = <
+					&ipu1_csi0_mux_from_parallel_sensor
+				>;
+				input-clock-frequency = <54000000>;
+				pixel-clock-frequency = <54000000>;
+				bus-width = <8>;
+				hsync-active = <1>;
+				vsync-active = <1>;
+				pclk-sample = <1>;
+			};
+		};
+	};
+
+	/* VM-010 */
+	mt9v024_0: mt9v024_0@48 {
+		compatible = "aptina,mt9v024";
+		pinctrl-names = "default";
+		pinctrl-0 = <
+			&pinctrl_cam0data
+			&pinctrl_cam0clk
+		>;
+		reg = <0x48>;
+		status = "disabled";
+
+		clocks = <&clks IMX6QDL_CLK_CKO1>;
+
+		assigned-clocks =
+			<&clks IMX6QDL_CLK_CKO1_SEL>,
+			<&clks IMX6QDL_CLK_CKO>,
+			<&clks IMX6QDL_CLK_PLL4_AUDIO_DIV>;
+
+		assigned-clock-parents =
+			<&clks IMX6QDL_CLK_PLL4_AUDIO_DIV>,
+			<&clks IMX6QDL_CLK_CKO1>;
+
+		assigned-clock-rates = <0>, <0>, <216000000>;
+
+		port {
+			mt9v024_ep0_0: endpoint {
+				remote-endpoint = <
+					&ipu1_csi0_mux_from_parallel_sensor
+				>;
+				link-frequencies = /bits/ 64 <27000000>;
+				bus-width = <8>;
+				hsync-active = <1>;
+				vsync-active = <1>;
+			};
+		};
+        };
+
+	/* VM-009 */
+	mt9m111_0: mt9m111_0@48 {
+		compatible = "micron,mt9m111";
+		pinctrl-names = "default";
+		pinctrl-0 = <
+			&pinctrl_cam0data
+			&pinctrl_cam0clk
+		>;
+		reg = <0x48>;
+		status = "disabled";
+
+		clocks = <&clks IMX6QDL_CLK_CKO>;
+		clock-names = "mclk";
+		phytec,invert-pixclk;
+
+		assigned-clocks =
+			<&clks IMX6QDL_CLK_CKO1_SEL>,
+			<&clks IMX6QDL_CLK_CKO>,
+			<&clks IMX6QDL_CLK_PLL4_AUDIO_DIV>,
+			<&clks IMX6QDL_CLK_CKO1>;
+
+
+		assigned-clock-parents =
+			<&clks IMX6QDL_CLK_PLL4_AUDIO_DIV>,
+			<&clks IMX6QDL_CLK_CKO1>;
+
+		assigned-clock-rates = <0>, <0>, <216000000>, <54000000>;
+
+		port {
+			mt9m111_ep0: endpoint {
+				remote-endpoint = <
+					&ipu1_csi0_mux_from_parallel_sensor
+				>;
+				bus-width = <8>;
+				hsync-active = <1>;
+				vsync-active = <1>;
+			};
+		};
+	};
+
+	/* VM-012 */
+	vm012_0: vm012_0@48 {
+		compatible = "phytec,vm012m";
+		pinctrl-names = "default";
+		pinctrl-0 = <
+			&pinctrl_cam0data
+			&pinctrl_cam0clk
+		>;
+		reg = <0x48>;
+		status = "disabled";
+
+		clocks = <&clks IMX6QDL_CLK_CKO1>;
+		sysclk = <54000000>;
+
+		assigned-clocks =
+			<&clks IMX6QDL_CLK_CKO1_SEL>,
+			<&clks IMX6QDL_CLK_CKO>,
+			<&clks IMX6QDL_CLK_PLL4_AUDIO_DIV>;
+
+		assigned-clock-parents =
+			<&clks IMX6QDL_CLK_PLL4_AUDIO_DIV>,
+			<&clks IMX6QDL_CLK_CKO1>;
+
+		assigned-clock-rates = <0>, <0>, <216000000>;
+
+		port {
+			vm012_ep0: endpoint {
+				remote-endpoint = <
+					&ipu1_csi0_mux_from_parallel_sensor
+				>;
+				/* HACK: set some attribute; else BT.656 mode
+				will be assumed silently */
+				hsync-active = <1>;
+				vsync-active = <1>;
+				bus-width = <10>;
+			};
+		};
+	};
+
+	/* VM-050 */
+	vm050_0: vm050_0@4a {
+		#gpio-cells = <2>;
+		compatible = "phytec,vm050";
+		pinctrl-names = "default";
+		pinctrl-0 = <
+			&pinctrl_cam0data
+			&pinctrl_cam0clk
+		>;
+
+		reg = <0x4a>;
+		status = "disabled";
+
+		port {
+			vm050_ep0: endpoint {
+				/* HACK: set some attribute; else BT.656 mode
+				will be assumed silently */
+				hsync-active = <1>;
+				bus-width = <8>;
+				remote-endpoint = <&ipu1_csi0_mux_from_parallel_sensor>;
+			};
+		};
+	};
+};
+
+&ipu1_csi0_mux_from_parallel_sensor {
+	remote-endpoint = <&mt9p031_ep0>;
 };
 
 &pcie {
@@ -170,12 +502,15 @@
 
 &usbotg {
 	status = "okay";
+	dr_mode = "peripheral";
 };
 
+/* SD1 on baseboard */
 &usdhc2 {
 	status = "okay";
 };
 
+/* SD0 on baseboard */
 &usdhc3 {
 	status = "okay";
 };

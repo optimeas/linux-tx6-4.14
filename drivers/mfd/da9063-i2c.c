@@ -98,6 +98,9 @@ static const struct regmap_range da9063_ad_volatile_ranges[] = {
 		.range_min = DA9063_REG_EN_32K,
 		.range_max = DA9063_REG_EN_32K,
 	}, {
+		.range_min = DA9063_REG_VBCORE2_A,
+		.range_max = DA9063_REG_VBCORE1_A,
+	}, {
 		.range_min = DA9063_AD_REG_MON_REG_5,
 		.range_max = DA9063_AD_REG_MON_REG_6,
 	},
@@ -188,6 +191,9 @@ static const struct regmap_range da9063_bb_volatile_ranges[] = {
 		.range_min = DA9063_REG_EN_32K,
 		.range_max = DA9063_REG_EN_32K,
 	}, {
+		.range_min = DA9063_REG_VBCORE2_A,
+		.range_max = DA9063_REG_VBCORE1_A,
+	}, {
 		.range_min = DA9063_BB_REG_MON_REG_5,
 		.range_max = DA9063_BB_REG_MON_REG_6,
 	},
@@ -247,6 +253,7 @@ static int da9063_i2c_probe(struct i2c_client *i2c,
 
 	i2c_set_clientdata(i2c, da9063);
 	da9063->dev = &i2c->dev;
+	da9063->i2c = i2c;
 	da9063->chip_irq = i2c->irq;
 
 	if (da9063->variant_code == PMIC_DA9063_AD) {

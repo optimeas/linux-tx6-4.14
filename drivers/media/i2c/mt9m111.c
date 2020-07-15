@@ -16,6 +16,8 @@
 #include <linux/v4l2-mediabus.h>
 #include <linux/module.h>
 
+#include <linux/pinctrl/consumer.h>
+
 #include <media/v4l2-async.h>
 #include <media/v4l2-clk.h>
 #include <media/v4l2-common.h>
@@ -70,6 +72,8 @@
 
 #define MT9M111_RM_FULL_POWER_RD	(0 << 10)
 #define MT9M111_RM_LOW_POWER_RD		(1 << 10)
+#define MT9M111_RM_SHOW_BORDER		(1 << 9)
+#define MT9M111_RM_OVERSIZED		(1 << 8)
 #define MT9M111_RM_COL_SKIP_4X		(1 << 5)
 #define MT9M111_RM_ROW_SKIP_4X		(1 << 4)
 #define MT9M111_RM_COL_SKIP_2X		(1 << 3)
@@ -92,6 +96,7 @@
  */
 #define MT9M111_OPER_MODE_CTRL		0x106
 #define MT9M111_OUTPUT_FORMAT_CTRL	0x108
+#define MT9M111_TPG_CTRL		0x148
 #define MT9M111_REDUCER_XZOOM_B		0x1a0
 #define MT9M111_REDUCER_XSIZE_B		0x1a1
 #define MT9M111_REDUCER_YZOOM_B		0x1a3
@@ -109,6 +114,8 @@
 #define MT9M111_OUTFMT_FLIP_BAYER_COL	(1 << 9)
 #define MT9M111_OUTFMT_FLIP_BAYER_ROW	(1 << 8)
 #define MT9M111_OUTFMT_PROCESSED_BAYER	(1 << 14)
+/* TODO: this is undocumented and mentioned in TN09163_A note only */
+#define MT9M111_OUTFMT_SOC_AS_SENSOR	BIT(12)
 #define MT9M111_OUTFMT_BYPASS_IFP	(1 << 10)
 #define MT9M111_OUTFMT_INV_PIX_CLOCK	(1 << 9)
 #define MT9M111_OUTFMT_RGB		(1 << 8)
@@ -124,6 +131,7 @@
 #define MT9M111_OUTFMT_AVG_CHROMA	(1 << 2)
 #define MT9M111_OUTFMT_SWAP_YCbCr_C_Y_RGB_EVEN	(1 << 1)
 #define MT9M111_OUTFMT_SWAP_YCbCr_Cb_Cr_RGB_R_B	(1 << 0)
+#define MT9M111_TPG_SEL_MASK		GENMASK(2, 0)
 
 /*
  * Camera control register addresses (0x200..0x2ff not implemented)
@@ -185,21 +193,71 @@ static struct mt9m111_context context_b = {
 struct mt9m111_datafmt {
 	u32	code;
 	enum v4l2_colorspace		colorspace;
+	bool bypass_ifp:1;
+	bool is_bayer:1;
 };
 
 static const struct mt9m111_datafmt mt9m111_colour_fmts[] = {
-	{MEDIA_BUS_FMT_YUYV8_2X8, V4L2_COLORSPACE_SRGB},
-	{MEDIA_BUS_FMT_YVYU8_2X8, V4L2_COLORSPACE_SRGB},
-	{MEDIA_BUS_FMT_UYVY8_2X8, V4L2_COLORSPACE_SRGB},
-	{MEDIA_BUS_FMT_VYUY8_2X8, V4L2_COLORSPACE_SRGB},
-	{MEDIA_BUS_FMT_RGB555_2X8_PADHI_LE, V4L2_COLORSPACE_SRGB},
-	{MEDIA_BUS_FMT_RGB555_2X8_PADHI_BE, V4L2_COLORSPACE_SRGB},
-	{MEDIA_BUS_FMT_RGB565_2X8_LE, V4L2_COLORSPACE_SRGB},
-	{MEDIA_BUS_FMT_RGB565_2X8_BE, V4L2_COLORSPACE_SRGB},
-	{MEDIA_BUS_FMT_BGR565_2X8_LE, V4L2_COLORSPACE_SRGB},
-	{MEDIA_BUS_FMT_BGR565_2X8_BE, V4L2_COLORSPACE_SRGB},
-	{MEDIA_BUS_FMT_SBGGR8_1X8, V4L2_COLORSPACE_SRGB},
-	{MEDIA_BUS_FMT_SBGGR10_2X8_PADHI_LE, V4L2_COLORSPACE_SRGB},
+	{MEDIA_BUS_FMT_YUYV8_2X8, V4L2_COLORSPACE_SRGB, false, false},
+	{MEDIA_BUS_FMT_YVYU8_2X8, V4L2_COLORSPACE_SRGB, false, false},
+	{MEDIA_BUS_FMT_UYVY8_2X8, V4L2_COLORSPACE_SRGB, false, false},
+	{MEDIA_BUS_FMT_VYUY8_2X8, V4L2_COLORSPACE_SRGB, false, false},
+	{MEDIA_BUS_FMT_RGB555_2X8_PADHI_LE, V4L2_COLORSPACE_SRGB, false, false},
+	{MEDIA_BUS_FMT_RGB555_2X8_PADHI_BE, V4L2_COLORSPACE_SRGB, false, false},
+	{MEDIA_BUS_FMT_RGB565_2X8_LE, V4L2_COLORSPACE_SRGB, false, false},
+	{MEDIA_BUS_FMT_RGB565_2X8_BE, V4L2_COLORSPACE_SRGB, false, false},
+	{MEDIA_BUS_FMT_BGR565_2X8_LE, V4L2_COLORSPACE_SRGB, false, false},
+	{MEDIA_BUS_FMT_BGR565_2X8_BE, V4L2_COLORSPACE_SRGB, false, false},
+	{MEDIA_BUS_FMT_SBGGR10_2X8_PADHI_LE, V4L2_COLORSPACE_SRGB, true, true},
+};
+
+enum mt9m111_mode_id {
+	MT9M111_MODE_QSXGA_640_512,
+	MT9M111_MODE_SXGA_1280_1024,
+	MT9M111_NUM_MODES,
+};
+
+enum mt9m111_frame_rate {
+	MT9M111_8_FPS,
+	MT9M111_15_FPS,
+	MT9M111_30_FPS,
+	MT9M111_NUM_FRAMERATES,
+};
+
+static const int mt9m111_framerates[] = {
+	[MT9M111_8_FPS] = 8,
+	[MT9M111_15_FPS] = 15,
+	[MT9M111_30_FPS] = 30,
+};
+
+struct mt9m111_mode_info {
+	enum mt9m111_mode_id id;
+	u32 width;
+	u32 height;
+	u32 value;
+};
+
+static const struct mt9m111_datafmt mt9m111_10bit_fmts[] = {
+	{MEDIA_BUS_FMT_SBGGR10_1X10, V4L2_COLORSPACE_SRGB, true, true},
+	{MEDIA_BUS_FMT_SGBRG10_1X10, V4L2_COLORSPACE_SRGB, true, true},
+	{MEDIA_BUS_FMT_SGRBG10_1X10, V4L2_COLORSPACE_SRGB, true, true},
+	{MEDIA_BUS_FMT_SRGGB10_1X10, V4L2_COLORSPACE_SRGB, true, true},
+};
+
+static const struct mt9m111_datafmt mt9m111_processed_fmts[] = {
+	{MEDIA_BUS_FMT_SBGGR8_1X8, V4L2_COLORSPACE_SRGB, false, true},
+	{MEDIA_BUS_FMT_SGBRG8_1X8, V4L2_COLORSPACE_SRGB, false, true},
+	{MEDIA_BUS_FMT_SGRBG8_1X8, V4L2_COLORSPACE_SRGB, false, true},
+	{MEDIA_BUS_FMT_SRGGB8_1X8, V4L2_COLORSPACE_SRGB, false, true},
+};
+
+enum mt9m111_pin_state {
+	/* pixel signals, i2c + clock are on; set, when sensor is streaming */
+	PIN_STATE_ACTIVE,
+	/* pixel signals are not needed; i2c + clock are on */
+	PIN_STATE_IDLE,
+	/* pixel signals, i2c + clock are not needed */
+	PIN_STATE_SLEEP,
 };
 
 struct mt9m111 {
@@ -211,11 +269,137 @@ struct mt9m111 {
 	struct v4l2_clk *clk;
 	unsigned int width;	/* output */
 	unsigned int height;	/* sizes */
+	struct v4l2_fract frame_interval;
+	const struct mt9m111_mode_info *current_mode;
 	struct mutex power_lock; /* lock to protect power_count */
 	int power_count;
 	const struct mt9m111_datafmt *fmt;
 	int lastpage;	/* PageMap cache value */
+	bool invert_pixclk:1;
+	bool allow_10bit:1;
+	bool allow_burst:1;
+	bool is_streaming:1;
+	struct mutex dev_lock;
+	unsigned int ref_cnt;
+#ifdef CONFIG_PINCTRL
+	struct pinctrl *pinctrl;
+	struct pinctrl_state *pin_st[3];
+#endif
+#ifdef CONFIG_MEDIA_CONTROLLER
+	struct media_pad pad;
+#endif
 };
+
+static const struct mt9m111_mode_info
+mt9m111_mode_data[MT9M111_NUM_FRAMERATES][MT9M111_NUM_MODES] = {
+	{
+		{MT9M111_MODE_SXGA_1280_1024, 1280, 1024,
+		MT9M111_RM_LOW_POWER_RD},
+	}, {
+		{MT9M111_MODE_QSXGA_640_512, 640, 512,
+		MT9M111_RM_FULL_POWER_RD},
+		{MT9M111_MODE_SXGA_1280_1024, 1280, 1024,
+		MT9M111_RM_FULL_POWER_RD},
+	}, {
+		{MT9M111_MODE_QSXGA_640_512, 640, 512,
+		(MT9M111_RM_FULL_POWER_RD |
+			MT9M111_RM_COL_SKIP_2X |
+			MT9M111_RM_ROW_SKIP_2X)},
+	}
+};
+
+static int mt9m111_pinctrl_state(struct mt9m111 *mt9m111,
+                                enum mt9m111_pin_state state)
+{
+	struct pinctrl *pinctrl;
+	struct pinctrl_state *st;
+
+#ifdef CONFIG_PINCTRL
+	pinctrl = mt9m111->pinctrl;
+	st = mt9m111->pin_st[state];
+#else
+	st = NULL;
+#endif
+
+	if (!st)
+		return 0;
+
+	return pinctrl_select_state(mt9m111->pinctrl, st);
+}
+
+/* ensures that sensor is at least in IDLE state */
+static int mt9m111_get_device(struct mt9m111 *mt9m111)
+{
+	int ret;
+	bool have_clk = false;
+
+	mutex_lock(&mt9m111->dev_lock);
+
+	if (mt9m111->ref_cnt == 0) {
+		struct i2c_client *client =
+			v4l2_get_subdevdata(&mt9m111->subdev);
+
+		if (mt9m111->clk) {
+			ret = v4l2_clk_enable(mt9m111->clk);
+			if (ret < 0) {
+				dev_err(&client->dev,
+					"failed to enable clock: %d\n", ret);
+				goto out;
+			}
+
+			have_clk = true;
+		}
+
+		ret = mt9m111_pinctrl_state(mt9m111, PIN_STATE_IDLE);
+		if (ret < 0) {
+			dev_err(&client->dev, "failed to setup pins: %d\n", ret);
+			goto out;
+		}
+	}
+
+	++mt9m111->ref_cnt;
+	ret = 0;
+
+out:
+	if (ret < 0) {
+		if (have_clk)
+			v4l2_clk_disable(mt9m111->clk);
+	}
+
+	mutex_unlock(&mt9m111->dev_lock);
+
+	return ret;
+}
+
+static void mt9m111_put_device(struct mt9m111 *mt9m111)
+{
+	int ret;
+
+	mutex_lock(&mt9m111->dev_lock);
+
+	if (WARN_ON(mt9m111->ref_cnt == 0))
+		goto out;
+
+	if (mt9m111->ref_cnt == 1) {
+		struct i2c_client *client =
+			v4l2_get_subdevdata(&mt9m111->subdev);
+
+		ret = mt9m111_pinctrl_state(mt9m111, PIN_STATE_SLEEP);
+		if (ret < 0) {
+			dev_warn(&client->dev,
+				"failed to disable pins: %d\n", ret);
+			/* ignore error */
+		}
+
+		if (mt9m111->clk)
+			v4l2_clk_disable(mt9m111->clk);
+	}
+
+	--mt9m111->ref_cnt;
+
+out:
+	mutex_unlock(&mt9m111->dev_lock);
+}
 
 /* Find a data format by a pixel code */
 static const struct mt9m111_datafmt *mt9m111_find_datafmt(struct mt9m111 *mt9m111,
@@ -225,6 +409,18 @@ static const struct mt9m111_datafmt *mt9m111_find_datafmt(struct mt9m111 *mt9m11
 	for (i = 0; i < ARRAY_SIZE(mt9m111_colour_fmts); i++)
 		if (mt9m111_colour_fmts[i].code == code)
 			return mt9m111_colour_fmts + i;
+
+	if (mt9m111->allow_10bit) {
+		for (i = 0; i < ARRAY_SIZE(mt9m111_10bit_fmts); i++)
+			if (mt9m111_10bit_fmts[i].code == code)
+				return mt9m111_10bit_fmts + i;
+	}
+
+	if (mt9m111->allow_burst) {
+		for (i = 0; i < ARRAY_SIZE(mt9m111_processed_fmts); i++)
+			if (mt9m111_processed_fmts[i].code == code)
+				return mt9m111_processed_fmts + i;
+	}
 
 	return mt9m111->fmt;
 }
@@ -240,6 +436,8 @@ static int reg_page_map_set(struct i2c_client *client, const u16 reg)
 	u16 page;
 	struct mt9m111 *mt9m111 = to_mt9m111(client);
 
+	WARN_ON(mt9m111->ref_cnt == 0);
+
 	page = (reg >> 8);
 	if (page == mt9m111->lastpage)
 		return 0;
@@ -254,7 +452,10 @@ static int reg_page_map_set(struct i2c_client *client, const u16 reg)
 
 static int mt9m111_reg_read(struct i2c_client *client, const u16 reg)
 {
+	struct mt9m111 *mt9m111 = to_mt9m111(client);
 	int ret;
+
+	WARN_ON(mt9m111->ref_cnt == 0);
 
 	ret = reg_page_map_set(client, reg);
 	if (!ret)
@@ -267,7 +468,10 @@ static int mt9m111_reg_read(struct i2c_client *client, const u16 reg)
 static int mt9m111_reg_write(struct i2c_client *client, const u16 reg,
 			     const u16 data)
 {
+	struct mt9m111 *mt9m111 = to_mt9m111(client);
 	int ret;
+
+	WARN_ON(mt9m111->ref_cnt == 0);
 
 	ret = reg_page_map_set(client, reg);
 	if (!ret)
@@ -336,6 +540,7 @@ static int mt9m111_setup_geometry(struct mt9m111 *mt9m111, struct v4l2_rect *rec
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&mt9m111->subdev);
 	int ret;
+	struct mt9m111_datafmt const *fmt = mt9m111_find_datafmt(mt9m111, code);
 
 	ret = reg_write(COLUMN_START, rect->left);
 	if (!ret)
@@ -346,7 +551,7 @@ static int mt9m111_setup_geometry(struct mt9m111 *mt9m111, struct v4l2_rect *rec
 	if (!ret)
 		ret = reg_write(WINDOW_HEIGHT, rect->height);
 
-	if (code != MEDIA_BUS_FMT_SBGGR10_2X8_PADHI_LE) {
+	if (!fmt->bypass_ifp && !mt9m111->allow_burst) {
 		/* IFP in use, down-scaling possible */
 		if (!ret)
 			ret = mt9m111_setup_rect_ctx(mt9m111, &context_b,
@@ -398,8 +603,11 @@ static int mt9m111_set_selection(struct v4l2_subdev *sd,
 	    sel->target != V4L2_SEL_TGT_CROP)
 		return -EINVAL;
 
-	if (mt9m111->fmt->code == MEDIA_BUS_FMT_SBGGR8_1X8 ||
-	    mt9m111->fmt->code == MEDIA_BUS_FMT_SBGGR10_2X8_PADHI_LE) {
+	ret = mt9m111_get_device(mt9m111);
+	if (ret < 0)
+		return ret;
+
+	if (mt9m111->fmt->is_bayer) {
 		/* Bayer format - even size lengths */
 		align = 1;
 		/* Let the user play with the starting pixel */
@@ -424,6 +632,9 @@ static int mt9m111_set_selection(struct v4l2_subdev *sd,
 		mt9m111->width = width;
 		mt9m111->height = height;
 	}
+
+	if (ret)
+		mt9m111_put_device(mt9m111);
 
 	return ret;
 }
@@ -479,16 +690,28 @@ static int mt9m111_set_pixfmt(struct mt9m111 *mt9m111,
 	struct i2c_client *client = v4l2_get_subdevdata(&mt9m111->subdev);
 	u16 data_outfmt2, mask_outfmt2 = MT9M111_OUTFMT_PROCESSED_BAYER |
 		MT9M111_OUTFMT_BYPASS_IFP | MT9M111_OUTFMT_RGB |
+		MT9M111_OUTFMT_SOC_AS_SENSOR |
 		MT9M111_OUTFMT_RGB565 | MT9M111_OUTFMT_RGB555 |
 		MT9M111_OUTFMT_RGB444x | MT9M111_OUTFMT_RGBx444 |
 		MT9M111_OUTFMT_SWAP_YCbCr_C_Y_RGB_EVEN |
-		MT9M111_OUTFMT_SWAP_YCbCr_Cb_Cr_RGB_R_B;
+		MT9M111_OUTFMT_SWAP_YCbCr_Cb_Cr_RGB_R_B |
+		MT9M111_OUTFMT_INV_PIX_CLOCK;
+
 	int ret;
 
 	switch (code) {
 	case MEDIA_BUS_FMT_SBGGR8_1X8:
+	case MEDIA_BUS_FMT_SGBRG8_1X8:
+	case MEDIA_BUS_FMT_SGRBG8_1X8:
+	case MEDIA_BUS_FMT_SRGGB8_1X8:
 		data_outfmt2 = MT9M111_OUTFMT_PROCESSED_BAYER |
 			MT9M111_OUTFMT_RGB;
+		break;
+	case MEDIA_BUS_FMT_SBGGR10_1X10:
+	case MEDIA_BUS_FMT_SGBRG10_1X10:
+	case MEDIA_BUS_FMT_SGRBG10_1X10:
+	case MEDIA_BUS_FMT_SRGGB10_1X10:
+		data_outfmt2 = MT9M111_OUTFMT_SOC_AS_SENSOR;
 		break;
 	case MEDIA_BUS_FMT_SBGGR10_2X8_PADHI_LE:
 		data_outfmt2 = MT9M111_OUTFMT_BYPASS_IFP | MT9M111_OUTFMT_RGB;
@@ -534,6 +757,9 @@ static int mt9m111_set_pixfmt(struct mt9m111 *mt9m111,
 		return -EINVAL;
 	}
 
+	if (mt9m111->invert_pixclk)
+		data_outfmt2 |= MT9M111_OUTFMT_INV_PIX_CLOCK;
+
 	ret = mt9m111_reg_mask(client, context_a.output_fmt_ctrl2,
 			       data_outfmt2, mask_outfmt2);
 	if (!ret)
@@ -541,6 +767,31 @@ static int mt9m111_set_pixfmt(struct mt9m111 *mt9m111,
 				       data_outfmt2, mask_outfmt2);
 
 	return ret;
+}
+
+static const struct mt9m111_mode_info *
+mt9m111_find_mode(struct mt9m111 *mt9m111, enum mt9m111_frame_rate fr,
+		 int width, int height, bool nearest)
+{
+	const struct mt9m111_mode_info *mode = NULL;
+	int i;
+
+	for (i = MT9M111_NUM_MODES - 1; i >= 0; i--) {
+		mode = &mt9m111_mode_data[fr][i];
+
+		if (mode->width && mode->height) {
+			if ((nearest && mode->width <= width &&
+			     mode->height <= height) ||
+			    (!nearest && mode->width == width &&
+			     mode->height == height))
+				break;
+		}
+	}
+
+	if (nearest && i < 0)
+		mode = &mt9m111_mode_data[fr][0];
+
+	return mode;
 }
 
 static int mt9m111_set_fmt(struct v4l2_subdev *sd,
@@ -555,13 +806,19 @@ static int mt9m111_set_fmt(struct v4l2_subdev *sd,
 	bool bayer;
 	int ret;
 
+	if (mt9m111->is_streaming)
+		return -EBUSY;
+
+	ret = mt9m111_get_device(mt9m111);
+	if (ret < 0)
+		return ret;
+
 	if (format->pad)
 		return -EINVAL;
 
 	fmt = mt9m111_find_datafmt(mt9m111, mf->code);
 
-	bayer = fmt->code == MEDIA_BUS_FMT_SBGGR8_1X8 ||
-		fmt->code == MEDIA_BUS_FMT_SBGGR10_2X8_PADHI_LE;
+	bayer = fmt->is_bayer;
 
 	/*
 	 * With Bayer format enforce even side lengths, but let the user play
@@ -572,7 +829,7 @@ static int mt9m111_set_fmt(struct v4l2_subdev *sd,
 		rect->height = ALIGN(rect->height, 2);
 	}
 
-	if (fmt->code == MEDIA_BUS_FMT_SBGGR10_2X8_PADHI_LE) {
+	if (fmt->bypass_ifp && mt9m111->allow_burst) {
 		/* IFP bypass mode, no scaling */
 		mf->width = rect->width;
 		mf->height = rect->height;
@@ -589,6 +846,7 @@ static int mt9m111_set_fmt(struct v4l2_subdev *sd,
 
 	mf->code = fmt->code;
 	mf->colorspace = fmt->colorspace;
+	mf->field = V4L2_FIELD_NONE;
 
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
 		cfg->try_fmt = *mf;
@@ -604,6 +862,9 @@ static int mt9m111_set_fmt(struct v4l2_subdev *sd,
 		mt9m111->fmt	= fmt;
 	}
 
+	if (ret)
+		mt9m111_put_device(mt9m111);
+
 	return ret;
 }
 
@@ -611,34 +872,51 @@ static int mt9m111_set_fmt(struct v4l2_subdev *sd,
 static int mt9m111_g_register(struct v4l2_subdev *sd,
 			      struct v4l2_dbg_register *reg)
 {
+	struct mt9m111 *mt9m111 = container_of(sd, struct mt9m111, subdev);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	int ret;
 	int val;
 
 	if (reg->reg > 0x2ff)
 		return -EINVAL;
+
+	ret = mt9m111_get_device(mt9m111);
+	if (ret < 0)
+		return ret;
 
 	val = mt9m111_reg_read(client, reg->reg);
 	reg->size = 2;
 	reg->val = (u64)val;
 
 	if (reg->val > 0xffff)
-		return -EIO;
+		ret = -EIO;
+	else
+		ret = 0;
 
-	return 0;
+	mt9m111_put_device(mt9m111);
+
+	return ret;
 }
 
 static int mt9m111_s_register(struct v4l2_subdev *sd,
 			      const struct v4l2_dbg_register *reg)
 {
+	struct mt9m111 *mt9m111 = container_of(sd, struct mt9m111, subdev);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	int ret;
 
 	if (reg->reg > 0x2ff)
 		return -EINVAL;
 
-	if (mt9m111_reg_write(client, reg->reg, reg->val) < 0)
-		return -EIO;
+	ret = mt9m111_get_device(mt9m111);
+	if (ret < 0)
+		return ret;
 
-	return 0;
+	ret = mt9m111_reg_write(client, reg->reg, reg->val);
+
+	mt9m111_put_device(mt9m111);
+
+	return ret;
 }
 #endif
 
@@ -703,7 +981,26 @@ static int mt9m111_set_autowhitebalance(struct mt9m111 *mt9m111, int on)
 	return reg_clear(OPER_MODE_CTRL, MT9M111_OPMODE_AUTOWHITEBAL_EN);
 }
 
-static int mt9m111_s_ctrl(struct v4l2_ctrl *ctrl)
+static const char * const mt9m111_test_pattern_menu[] = {
+	"Disabled",
+	"Vertical monochrome gradient",
+	"Flat color type 1",
+	"Flat color type 2",
+	"Flat color type 3",
+	"Flat color type 4",
+	"Flat color type 5",
+	"Color bar",
+};
+
+static int mt9m111_set_test_pattern(struct mt9m111 *mt9m111, int val)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(&mt9m111->subdev);
+
+	return mt9m111_reg_mask(client, MT9M111_TPG_CTRL, val,
+				MT9M111_TPG_SEL_MASK);
+}
+
+static int _mt9m111_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct mt9m111 *mt9m111 = container_of(ctrl->handler,
 					       struct mt9m111, hdl);
@@ -721,9 +1018,28 @@ static int mt9m111_s_ctrl(struct v4l2_ctrl *ctrl)
 		return mt9m111_set_autoexposure(mt9m111, ctrl->val);
 	case V4L2_CID_AUTO_WHITE_BALANCE:
 		return mt9m111_set_autowhitebalance(mt9m111, ctrl->val);
+	case V4L2_CID_TEST_PATTERN:
+		return mt9m111_set_test_pattern(mt9m111, ctrl->val);
 	}
 
 	return -EINVAL;
+}
+
+static int mt9m111_s_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct mt9m111 *mt9m111 = container_of(ctrl->handler,
+						struct mt9m111, hdl);
+	int ret;
+
+	ret = mt9m111_get_device(mt9m111);
+	if (ret < 0)
+		return ret;
+
+	ret = _mt9m111_s_ctrl(ctrl);
+
+	mt9m111_put_device(mt9m111);
+
+	return ret;
 }
 
 static int mt9m111_suspend(struct mt9m111 *mt9m111)
@@ -746,11 +1062,17 @@ static int mt9m111_suspend(struct mt9m111 *mt9m111)
 
 static void mt9m111_restore_state(struct mt9m111 *mt9m111)
 {
+	struct i2c_client *client = v4l2_get_subdevdata(&mt9m111->subdev);
+
 	mt9m111_set_context(mt9m111, mt9m111->ctx);
 	mt9m111_set_pixfmt(mt9m111, mt9m111->fmt->code);
 	mt9m111_setup_geometry(mt9m111, &mt9m111->rect,
 			mt9m111->width, mt9m111->height, mt9m111->fmt->code);
 	v4l2_ctrl_handler_setup(&mt9m111->hdl);
+	mt9m111_reg_write(client, mt9m111->ctx->read_mode,
+			MT9M111_RM_SHOW_BORDER |
+			MT9M111_RM_OVERSIZED |
+			mt9m111->current_mode->value);
 }
 
 static int mt9m111_resume(struct mt9m111 *mt9m111)
@@ -808,6 +1130,10 @@ static int mt9m111_s_power(struct v4l2_subdev *sd, int on)
 	struct mt9m111 *mt9m111 = container_of(sd, struct mt9m111, subdev);
 	int ret = 0;
 
+	ret = mt9m111_get_device(mt9m111);
+	if (ret < 0)
+		return ret;
+
 	mutex_lock(&mt9m111->power_lock);
 
 	/*
@@ -828,7 +1154,32 @@ static int mt9m111_s_power(struct v4l2_subdev *sd, int on)
 	}
 
 	mutex_unlock(&mt9m111->power_lock);
+
+	mt9m111_put_device(mt9m111);
+
 	return ret;
+}
+
+static int mt9m111_querycap(struct mt9m111 *mt9m111,
+                           struct v4l2_capability *cap)
+{
+	strcpy(cap->driver, "mt9m111");
+
+	return 0;
+}
+
+static long mt9m111_core_ioctl(struct v4l2_subdev *sd,
+                              unsigned int cmd, void *arg)
+{
+	struct mt9m111 *mt9m111 = container_of(sd, struct mt9m111, subdev);
+
+	switch (cmd) {
+	case VIDIOC_QUERYCAP:
+	        return mt9m111_querycap(mt9m111, arg);
+
+	default:
+	        return -ENOTTY;
+	}
 }
 
 static const struct v4l2_ctrl_ops mt9m111_ctrl_ops = {
@@ -837,40 +1188,216 @@ static const struct v4l2_ctrl_ops mt9m111_ctrl_ops = {
 
 static const struct v4l2_subdev_core_ops mt9m111_subdev_core_ops = {
 	.s_power	= mt9m111_s_power,
+	.ioctl		= mt9m111_core_ioctl,
 #ifdef CONFIG_VIDEO_ADV_DEBUG
 	.g_register	= mt9m111_g_register,
 	.s_register	= mt9m111_s_register,
 #endif
 };
 
+static int mt9m111_g_frame_interval(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_frame_interval *fi)
+{
+	struct mt9m111 *mt9m111 = container_of(sd, struct mt9m111, subdev);
+
+	fi->interval = mt9m111->frame_interval;
+
+	return 0;
+}
+
+static int mt9m111_s_frame_interval(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_frame_interval *fi)
+{
+	struct mt9m111 *mt9m111 = container_of(sd, struct mt9m111, subdev);
+	const struct mt9m111_mode_info *mode;
+	struct v4l2_fract *fract = &fi->interval;
+	int fps, ret = 0;
+
+	if (mt9m111->is_streaming)
+		return -EBUSY;
+
+	if (fi->pad != 0)
+		return -EINVAL;
+
+	if (fract->numerator == 0) {
+		fract->denominator = mt9m111_framerates[MT9M111_30_FPS];
+		fract->numerator = 1;
+	}
+
+	fps = DIV_ROUND_CLOSEST(fract->denominator, fract->numerator);
+
+	switch (fps) {
+	case 30:
+		ret = MT9M111_30_FPS;
+		break;
+	default:
+	case 15:
+		ret = MT9M111_15_FPS;
+		break;
+	case 8:
+		ret = MT9M111_8_FPS;
+		break;
+	}
+
+	mode = mt9m111_find_mode(mt9m111, ret,
+			mt9m111->width, mt9m111->height, false);
+	if (!mode)
+		return -EINVAL;
+
+	mt9m111->current_mode = mode;
+	mt9m111->frame_interval = fi->interval;
+
+	return ret;
+}
+
+static struct mt9m111_datafmt const *mt9m111_fmt_by_idx(
+	struct mt9m111 const *mt9m111, size_t idx)
+{
+	size_t  cnt;
+
+	cnt = ARRAY_SIZE(mt9m111_colour_fmts);
+	if (idx < cnt)
+	        return &mt9m111_colour_fmts[idx];
+	idx -= cnt;
+
+	if (mt9m111->allow_10bit) {
+		cnt = ARRAY_SIZE(mt9m111_10bit_fmts);
+		if (idx < cnt)
+			return &mt9m111_10bit_fmts[idx];
+		idx -= cnt;
+	}
+
+	if (mt9m111->allow_burst) {
+		cnt = ARRAY_SIZE(mt9m111_processed_fmts);
+		if (idx < cnt)
+			return &mt9m111_processed_fmts[idx];
+		idx -= cnt;
+	}
+
+	return NULL;
+}
+
 static int mt9m111_enum_mbus_code(struct v4l2_subdev *sd,
 		struct v4l2_subdev_pad_config *cfg,
 		struct v4l2_subdev_mbus_code_enum *code)
 {
-	if (code->pad || code->index >= ARRAY_SIZE(mt9m111_colour_fmts))
+	struct mt9m111 *mt9m111 =
+		container_of(sd, struct mt9m111, subdev);
+	struct mt9m111_datafmt const *fmt =
+		mt9m111_fmt_by_idx(mt9m111, code->index);
+
+	if (!fmt)
 		return -EINVAL;
 
-	code->code = mt9m111_colour_fmts[code->index].code;
+	code->code = fmt->code;
 	return 0;
 }
 
 static int mt9m111_g_mbus_config(struct v4l2_subdev *sd,
 				struct v4l2_mbus_config *cfg)
 {
-	cfg->flags = V4L2_MBUS_MASTER | V4L2_MBUS_PCLK_SAMPLE_RISING |
+	struct mt9m111 *mt9m111 = container_of(sd, struct mt9m111, subdev);
+
+	cfg->flags = V4L2_MBUS_MASTER |
 		V4L2_MBUS_HSYNC_ACTIVE_HIGH | V4L2_MBUS_VSYNC_ACTIVE_HIGH |
 		V4L2_MBUS_DATA_ACTIVE_HIGH;
+
+	cfg->flags |= (mt9m111->invert_pixclk ?
+			V4L2_MBUS_PCLK_SAMPLE_FALLING:
+			V4L2_MBUS_PCLK_SAMPLE_RISING);
+
 	cfg->type = V4L2_MBUS_PARALLEL;
 
 	return 0;
 }
 
+static int mt9m111_s_stream_on(struct mt9m111 *mt9m111)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(&mt9m111->subdev);
+	int ret;
+
+	ret = mt9m111_get_device(mt9m111);
+	if (ret < 0)
+	        return ret;
+
+	ret = mt9m111_pinctrl_state(mt9m111, PIN_STATE_ACTIVE);
+	if (ret < 0) {
+	        dev_err(&client->dev, "failed to set pins to active: %d\n", ret);
+	        goto out;
+	}
+
+	mt9m111->is_streaming = true;
+
+	ret = 0;
+
+out:
+	if (ret < 0)
+		mt9m111_put_device(mt9m111);
+
+	return ret;
+}
+
+static int mt9m111_s_stream_off(struct mt9m111 *mt9m111)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(&mt9m111->subdev);
+	int ret;
+
+	ret = mt9m111_pinctrl_state(mt9m111, PIN_STATE_IDLE);
+	if (ret < 0) {
+	        dev_err(&client->dev, "failed to set pins to idle: %d\n", ret);
+	        /* ignore error */
+	}
+
+	mt9m111->is_streaming = false;
+
+	return 0;
+}
+
+static int mt9m111_s_stream(struct v4l2_subdev *sd, int enable)
+{
+	struct mt9m111 *mt9m111 = container_of(sd, struct mt9m111, subdev);
+
+	/* TODO: is 'is_streaming' protected by locks in the upper layers? */
+
+	if (enable && mt9m111->is_streaming)
+		return -EBUSY;
+	else if (!enable && !mt9m111->is_streaming)
+		return -EINVAL;
+	else if (enable)
+		return mt9m111_s_stream_on(mt9m111);
+	else
+		return mt9m111_s_stream_off(mt9m111);
+}
+
 static const struct v4l2_subdev_video_ops mt9m111_subdev_video_ops = {
 	.g_mbus_config	= mt9m111_g_mbus_config,
+	.g_frame_interval = mt9m111_g_frame_interval,
+	.s_frame_interval = mt9m111_s_frame_interval,
+	.s_stream	= mt9m111_s_stream,
 };
+
+static int mt9m111_pad_enum_frame_size(struct v4l2_subdev *sd,
+					struct v4l2_subdev_pad_config *cfg,
+					struct v4l2_subdev_frame_size_enum *fse)
+{
+	struct mt9m111 *mt9m111 = container_of(sd, struct mt9m111, subdev);
+	struct mt9m111_datafmt const *fmt =
+		mt9m111_fmt_by_idx(mt9m111, fse->index);
+
+	if (fse->pad != 0 || !fmt)
+		return -EINVAL;
+
+	fse->min_width = 2;
+	fse->max_width = 1280;
+	fse->min_height = 2;
+	fse->max_height = 1024;
+
+	return 0;
+}
 
 static const struct v4l2_subdev_pad_ops mt9m111_subdev_pad_ops = {
 	.enum_mbus_code = mt9m111_enum_mbus_code,
+	.enum_frame_size= mt9m111_pad_enum_frame_size,
 	.get_selection	= mt9m111_get_selection,
 	.set_selection	= mt9m111_set_selection,
 	.get_fmt	= mt9m111_get_fmt,
@@ -893,9 +1420,13 @@ static int mt9m111_video_probe(struct i2c_client *client)
 	s32 data;
 	int ret;
 
-	ret = mt9m111_s_power(&mt9m111->subdev, 1);
+	ret = mt9m111_get_device(mt9m111);
 	if (ret < 0)
 		return ret;
+
+	ret = mt9m111_s_power(&mt9m111->subdev, 1);
+	if (ret < 0)
+		goto out;
 
 	data = reg_read(CHIP_VERSION);
 
@@ -923,6 +1454,76 @@ static int mt9m111_video_probe(struct i2c_client *client)
 
 done:
 	mt9m111_s_power(&mt9m111->subdev, 0);
+out:
+	mt9m111_put_device(mt9m111);
+
+	return ret;
+}
+
+static int mt9m111_init_pinctrl(struct mt9m111 *mt9m111, struct device *dev)
+{
+	static struct {
+		enum mt9m111_pin_state state;
+		char const *name;
+	} const STATES[] = {
+		{ PIN_STATE_ACTIVE, PINCTRL_STATE_DEFAULT },
+		{ PIN_STATE_IDLE, PINCTRL_STATE_IDLE },
+		{ PIN_STATE_SLEEP, PINCTRL_STATE_SLEEP },
+	};
+
+	int ret;
+	size_t i;
+	struct pinctrl *pinctrl;
+	struct pinctrl_state *pin_st[3];
+
+	if (!IS_ENABLED(CONFIG_PINCTRL))
+		return 0;
+
+	pinctrl = devm_pinctrl_get(dev);
+	ret = PTR_ERR_OR_ZERO(pinctrl);
+	if (ret < 0) {
+		if (ret != -EPROBE_DEFER)
+			dev_err(dev, "failed to get pinctl: %d\n", ret);
+		mt9m111->pinctrl = NULL;
+		goto out;
+	}
+
+	if (!pinctrl)
+		return 0;
+
+	for (i = 0; i < ARRAY_SIZE(STATES); ++i) {
+		enum mt9m111_pin_state st = STATES[i].state;
+		char const *name = STATES[i].name;
+		struct pinctrl_state *pst;
+
+		/* order is important for now because we use the previous
+		 * state when actual one is not available */
+		BUG_ON(st != i);
+
+		pst = pinctrl_lookup_state(pinctrl, name);
+		ret = PTR_ERR_OR_ZERO(pst);
+		if (ret == -ENODEV) {
+			/* see BUG_ON above! */
+			pst = i == 0 ? NULL : pin_st[i-1];
+		} else if (ret < 0) {
+			dev_err(dev,
+				"failed to get '%s' pinctl state: %d\n",
+				name, ret);
+			goto out;
+		}
+		pin_st[i] = pst;
+	}
+
+#ifdef CONFIG_PINCTRL
+	BUILD_BUG_ON(sizeof mt9m111->pin_st != sizeof pin_st);
+
+	mt9m111->pinctrl = pinctrl;
+	memcpy(mt9m111->pin_st, pin_st, sizeof pin_st);
+#endif
+
+	ret = 0;
+
+out:
 	return ret;
 }
 
@@ -945,12 +1546,31 @@ static int mt9m111_probe(struct i2c_client *client,
 
 	mt9m111->clk = v4l2_clk_get(&client->dev, "mclk");
 	if (IS_ERR(mt9m111->clk))
-		return -EPROBE_DEFER;
+		return PTR_ERR(mt9m111->clk);
+
+	mutex_init(&mt9m111->dev_lock);
 
 	/* Default HIGHPOWER context */
 	mt9m111->ctx = &context_b;
 
+	mt9m111->invert_pixclk = of_property_read_bool(client->dev.of_node,
+							"phytec,invert-pixclk");
+
+	mt9m111->allow_10bit = of_property_read_bool(client->dev.of_node,
+							"phytec,allow-10bit");
+	mt9m111->allow_burst = of_property_read_bool(client->dev.of_node,
+							"phytec,allow-burst");
+
+	ret = mt9m111_init_pinctrl(mt9m111, &client->dev);
+	if (ret < 0) {
+		dev_warn(&client->dev,
+			"failed to inialize pinctrl; skipping it for now: %d\n",
+			ret);
+	}
+
 	v4l2_i2c_subdev_init(&mt9m111->subdev, client, &mt9m111_subdev_ops);
+	mt9m111->subdev.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
+
 	v4l2_ctrl_handler_init(&mt9m111->hdl, 5);
 	v4l2_ctrl_new_std(&mt9m111->hdl, &mt9m111_ctrl_ops,
 			V4L2_CID_VFLIP, 0, 1, 1, 0);
@@ -963,11 +1583,28 @@ static int mt9m111_probe(struct i2c_client *client,
 	v4l2_ctrl_new_std_menu(&mt9m111->hdl,
 			&mt9m111_ctrl_ops, V4L2_CID_EXPOSURE_AUTO, 1, 0,
 			V4L2_EXPOSURE_AUTO);
+	v4l2_ctrl_new_std_menu_items(&mt9m111->hdl,
+			&mt9m111_ctrl_ops, V4L2_CID_TEST_PATTERN,
+			ARRAY_SIZE(mt9m111_test_pattern_menu) - 1, 0, 0,
+			mt9m111_test_pattern_menu);
 	mt9m111->subdev.ctrl_handler = &mt9m111->hdl;
 	if (mt9m111->hdl.error) {
 		ret = mt9m111->hdl.error;
 		goto out_clkput;
 	}
+
+#ifdef CONFIG_MEDIA_CONTROLLER
+	mt9m111->pad.flags = MEDIA_PAD_FL_SOURCE;
+	mt9m111->subdev.entity.function = MEDIA_ENT_F_CAM_SENSOR;
+	ret = media_entity_pads_init(&mt9m111->subdev.entity, 1, &mt9m111->pad);
+	if (ret < 0)
+		goto out_hdlfree;
+#endif
+
+	mt9m111->frame_interval.numerator = 1;
+	mt9m111->frame_interval.denominator = mt9m111_framerates[MT9M111_15_FPS];
+	mt9m111->current_mode =
+		&mt9m111_mode_data[MT9M111_15_FPS][MT9M111_MODE_SXGA_1280_1024];
 
 	/* Second stage probe - when a capture adapter is there */
 	mt9m111->rect.left	= MT9M111_MIN_DARK_COLS;
@@ -980,19 +1617,25 @@ static int mt9m111_probe(struct i2c_client *client,
 
 	ret = mt9m111_video_probe(client);
 	if (ret < 0)
-		goto out_hdlfree;
+		goto out_entityclean;
 
 	mt9m111->subdev.dev = &client->dev;
 	ret = v4l2_async_register_subdev(&mt9m111->subdev);
 	if (ret < 0)
-		goto out_hdlfree;
+		goto out_entityclean;
 
 	return 0;
 
+out_entityclean:
+#ifdef CONFIG_MEDIA_CONTROLLER
+	media_entity_cleanup(&mt9m111->subdev.entity);
 out_hdlfree:
+#endif
 	v4l2_ctrl_handler_free(&mt9m111->hdl);
 out_clkput:
 	v4l2_clk_put(mt9m111->clk);
+
+	WARN_ON(ret < 0 && mt9m111->ref_cnt > 0);
 
 	return ret;
 }
@@ -1000,10 +1643,19 @@ out_clkput:
 static int mt9m111_remove(struct i2c_client *client)
 {
 	struct mt9m111 *mt9m111 = to_mt9m111(client);
+	bool have_dev;
+
+	have_dev = mt9m111_get_device(mt9m111) == 0;
 
 	v4l2_async_unregister_subdev(&mt9m111->subdev);
+	media_entity_cleanup(&mt9m111->subdev.entity);
 	v4l2_clk_put(mt9m111->clk);
 	v4l2_ctrl_handler_free(&mt9m111->hdl);
+
+	if (have_dev)
+		mt9m111_put_device(mt9m111);
+
+	WARN_ON(mt9m111->ref_cnt > 0);
 
 	return 0;
 }

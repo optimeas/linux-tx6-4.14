@@ -34,6 +34,7 @@
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/system_misc.h>
+#include <asm/system_info.h>
 
 #include "common.h"
 #include "cpuidle.h"
@@ -248,15 +249,21 @@ static void __init imx6q_axi_init(void)
 			IMX6Q_GPR4_IPU_RD_CACHE_CTL;
 		regmap_update_bits(gpr, IOMUXC_GPR4, mask, mask);
 
-		/* Increase IPU read QoS priority */
+		/* Increase IPU read and write QoS priority */
 		regmap_update_bits(gpr, IOMUXC_GPR6,
+				IMX6Q_GPR6_IPU1_ID00_WR_QOS_MASK |
+				IMX6Q_GPR6_IPU1_ID01_WR_QOS_MASK |
 				IMX6Q_GPR6_IPU1_ID00_RD_QOS_MASK |
 				IMX6Q_GPR6_IPU1_ID01_RD_QOS_MASK,
-				(0xf << 16) | (0x7 << 20));
+				(0x7 << 0) | (0x6 << 4) |
+				(0xf << 16) | (0x6 << 20));
 		regmap_update_bits(gpr, IOMUXC_GPR7,
+				IMX6Q_GPR7_IPU2_ID00_WR_QOS_MASK |
+				IMX6Q_GPR7_IPU2_ID01_WR_QOS_MASK |
 				IMX6Q_GPR7_IPU2_ID00_RD_QOS_MASK |
 				IMX6Q_GPR7_IPU2_ID01_RD_QOS_MASK,
-				(0xf << 16) | (0x7 << 20));
+				(0x7 << 0) | (0x6 << 4) |
+				(0xf << 16) | (0x6 << 20));
 	} else {
 		pr_warn("failed to find fsl,imx6q-iomuxc-gpr regmap\n");
 	}
@@ -266,11 +273,14 @@ static void __init imx6q_init_machine(void)
 {
 	struct device *parent;
 
-	if (cpu_is_imx6q() && imx_get_soc_revision() == IMX_CHIP_REVISION_2_0)
+	if (cpu_is_imx6q() && imx_get_soc_revision() == IMX_CHIP_REVISION_2_0) {
 		imx_print_silicon_rev("i.MX6QP", IMX_CHIP_REVISION_1_0);
-	else
+		system_rev = IMX_CHIP_REVISION_1_0;
+	} else {
 		imx_print_silicon_rev(cpu_is_imx6dl() ? "i.MX6DL" : "i.MX6Q",
 				imx_get_soc_revision());
+		system_rev = imx_get_soc_revision();
+	}
 
 	parent = imx_soc_device_init();
 	if (parent == NULL)
@@ -393,6 +403,7 @@ static void __init imx6q_init_irq(void)
 {
 	imx_gpc_check_dt();
 	imx_init_revision_from_anatop();
+	imx_init_serial_from_ocotp("fsl,imx6q-ocotp");
 	imx_init_l2cache();
 	imx_src_init();
 	irqchip_init();

@@ -14,8 +14,10 @@
 #include <linux/regmap.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
+#include <asm/system_info.h>
 
 #include "common.h"
+#include "hardware.h"
 #include "cpuidle.h"
 
 static void __init imx6ul_enet_clk_init(void)
@@ -34,11 +36,11 @@ static void __init imx6ul_enet_clk_init(void)
 static int ksz8081_phy_fixup(struct phy_device *dev)
 {
 	if (dev && dev->interface == PHY_INTERFACE_MODE_MII) {
-		phy_write(dev, 0x1f, 0x8110);
-		phy_write(dev, 0x16, 0x201);
+		/* Override strap-in for MII mode */
+		phy_write(dev, 0x16, 0x1);
 	} else if (dev && dev->interface == PHY_INTERFACE_MODE_RMII) {
-		phy_write(dev, 0x1f, 0x8190);
-		phy_write(dev, 0x16, 0x202);
+		/* Override strap-in for RMII mode */
+		phy_write(dev, 0x16, 0x2);
 	}
 
 	return 0;
@@ -61,6 +63,12 @@ static void __init imx6ul_init_machine(void)
 {
 	struct device *parent;
 
+	system_rev = imx_get_soc_revision();
+	if (cpu_is_imx6ull())
+		imx_print_silicon_rev("i.MX 6ULL", system_rev);
+	else
+		imx_print_silicon_rev("i.MX 6UL", system_rev);
+
 	parent = imx_soc_device_init();
 	if (parent == NULL)
 		pr_warn("failed to initialize soc device\n");
@@ -74,6 +82,7 @@ static void __init imx6ul_init_machine(void)
 static void __init imx6ul_init_irq(void)
 {
 	imx_init_revision_from_anatop();
+	imx_init_serial_from_ocotp("fsl,imx6ul-ocotp");
 	imx_src_init();
 	irqchip_init();
 	imx6_pm_ccm_init("fsl,imx6ul-ccm");

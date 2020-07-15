@@ -379,7 +379,11 @@ dtb-$(CONFIG_SOC_IMX6Q) += \
 	imx6dl-icore-rqs.dtb \
 	imx6dl-nit6xlite.dtb \
 	imx6dl-nitrogen6x.dtb \
+	imx6dl-phytec-mira-ff-rdk-emmc.dtb \
+	imx6dl-phytec-mira-lc-rdk-nand.dtb \
+	imx6dl-phytec-mira-lc-rdk-emmc.dtb \
 	imx6dl-phytec-pbab01.dtb \
+	imx6dl-phytec-pbab01-nonor.dtb \
 	imx6dl-rex-basic.dtb \
 	imx6dl-riotboard.dtb \
 	imx6dl-sabreauto.dtb \
@@ -434,6 +438,10 @@ dtb-$(CONFIG_SOC_IMX6Q) += \
 	imx6q-nitrogen6_max.dtb \
 	imx6q-nitrogen6_som2.dtb \
 	imx6q-novena.dtb \
+	imx6q-phytec-mira-ff-rdk-emmc.dtb \
+	imx6q-phytec-mira-ff-rdk-nand.dtb \
+	imx6q-phytec-mira-ff-rdk-nand-rs485.dtb \
+	imx6q-phytec-nunki-rdk-nand.dtb \
 	imx6q-phytec-pbab01.dtb \
 	imx6q-rex-pro.dtb \
 	imx6q-sabreauto.dtb \
@@ -457,6 +465,7 @@ dtb-$(CONFIG_SOC_IMX6Q) += \
 	imx6q-zii-rdu2.dtb \
 	imx6qp-nitrogen6_max.dtb \
 	imx6qp-nitrogen6_som2.dtb \
+	imx6qp-phytec-mira-ff-rdk-nand.dtb \
 	imx6qp-sabreauto.dtb \
 	imx6qp-sabresd.dtb \
 	imx6qp-zii-rdu2.dtb
@@ -479,11 +488,16 @@ dtb-$(CONFIG_SOC_IMX6UL) += \
 	imx6ul-isiot-nand.dtb \
 	imx6ul-liteboard.dtb \
 	imx6ul-opos6uldev.dtb \
+	imx6ul-phytec-segin-ff-rdk-nand.dtb \
+	imx6ul-phytec-segin-ff-rdk-nand-rs485.dtb \
 	imx6ul-pico-hobbit.dtb \
 	imx6ul-tx6ul-0010.dtb \
 	imx6ul-tx6ul-0011.dtb \
 	imx6ul-tx6ul-mainboard.dtb \
-	imx6ull-14x14-evk.dtb
+	imx6ull-14x14-evk.dtb \
+	imx6ull-phytec-segin-lc-rdk-nand.dtb \
+	imx6ull-phytec-segin-ff-rdk-nand.dtb \
+	imx6ull-phytec-segin-ff-rdk-emmc.dtb
 dtb-$(CONFIG_SOC_IMX7D) += \
 	imx7d-cl-som-imx7.dtb \
 	imx7d-colibri-eval-v3.dtb \
@@ -629,10 +643,19 @@ dtb-$(CONFIG_SOC_AM33XX) += \
 	am335x-nano.dtb \
 	am335x-pepper.dtb \
 	am335x-phycore-rdk.dtb \
+	am335x-phycore-rdk-wifi.dtb \
+	am335x-phycore-nand-eeprom-rtc.dtb \
+	am335x-phycore-nand-eeprom-rtc-spi-tmp.dtb \
+	am335x-phycore-nand-eeprom.dtb \
+	am335x-phycore-nand-none.dtb \
+	am335x-phycore-emmc-eeprom-rtc-spi.dtb \
 	am335x-shc.dtb \
 	am335x-sbc-t335.dtb \
 	am335x-sl50.dtb \
-	am335x-wega-rdk.dtb
+	am335x-wega-rdk.dtb \
+	am335x-wega-nand-eeprom-rtc-spi.dtb \
+	am335x-wega-nand-eeprom-rtc.dtb \
+	am335x-regor-rdk.dtb
 dtb-$(CONFIG_ARCH_OMAP4) += \
 	omap4-droid4-xt894.dtb \
 	omap4-duovero-parlor.dtb \

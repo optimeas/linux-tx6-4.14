@@ -145,15 +145,30 @@ static int anatop_regmap_get_bypass(struct regulator_dev *reg, bool *enable)
 static int anatop_regmap_set_bypass(struct regulator_dev *reg, bool enable)
 {
 	struct anatop_regulator *anatop_reg = rdev_get_drvdata(reg);
+	struct regulator_desc *rdesc = &anatop_reg->rdesc;
 	int sel;
+	int ret = 0;
 
 	if (enable == anatop_reg->bypass)
 		return 0;
 
 	sel = enable ? LDO_FET_FULL_ON : anatop_reg->sel;
-	anatop_reg->bypass = enable;
 
-	return regulator_set_voltage_sel_regmap(reg, sel);
+	if (!anatop_regmap_is_enabled(reg))
+		sel = LDO_POWER_GATE;
+
+	ret = regulator_set_voltage_sel_regmap(reg, sel);
+
+	/*
+	 * Reduce the minimum dropout voltage in bypass mode since this margin
+	 * is not necessary for bypassed LDOs
+	 */
+	if (!ret) {
+		rdesc->min_dropout_uV = enable ? 0 : 125000;
+		anatop_reg->bypass = enable;
+	}
+
+	return ret;
 }
 
 static struct regulator_ops anatop_rops = {

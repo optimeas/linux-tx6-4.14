@@ -12,17 +12,24 @@
 #include <linux/err.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/pm_opp.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 
 #define PU_SOC_VOLTAGE_NORMAL	1250000
 #define PU_SOC_VOLTAGE_HIGH	1275000
+#define DC_VOLTAGE_MIN		1300000
+#define DC_VOLTAGE_MAX		1400000
 #define FREQ_1P2_GHZ		1200000000
+#define FREQ_800_MHZ            792000000
+#define FREQ_528_MHZ		528000000
+#define FREQ_400_MHZ            396000000
 
 static struct regulator *arm_reg;
 static struct regulator *pu_reg;
 static struct regulator *soc_reg;
+static struct regulator *dc_reg;
 
 static struct clk *arm_clk;
 static struct clk *pll1_sys_clk;
@@ -38,6 +45,8 @@ static struct device *cpu_dev;
 static bool free_opp;
 static struct cpufreq_frequency_table *freq_table;
 static unsigned int transition_latency;
+static bool bypass;
+static bool ignore_dc_reg;
 
 static u32 *imx6_soc_volt;
 static u32 soc_opp_count;
@@ -119,6 +128,10 @@ static int imx6q_set_target(struct cpufreq_policy *policy, unsigned int index)
 			clk_set_parent(secondary_sel_clk, pll2_pfd2_396m_clk);
 		clk_set_parent(step_clk, secondary_sel_clk);
 		clk_set_parent(pll1_sw_clk, step_clk);
+		if (freq_hz > clk_get_rate(pll2_bus_clk)) {
+			clk_set_rate(pll1_sys_clk, new_freq * 1000);
+			clk_set_parent(pll1_sw_clk, pll1_sys_clk);
+		}
 	} else {
 		clk_set_parent(step_clk, pll2_pfd2_396m_clk);
 		clk_set_parent(pll1_sw_clk, step_clk);
@@ -174,6 +187,142 @@ static int imx6q_set_target(struct cpufreq_policy *policy, unsigned int index)
 	return 0;
 }
 
+static int imx6q_cpufreq_prepare_bypass(bool enable)
+{
+	int ret = 0;
+
+	/*
+	* Downgrade ARM speed to 400Mhz as half of boot 800Mhz before ldo
+	* bypassed, also downgrade internal vddarm ldo to 0.975V (1.15V
+	* on i.mx6dl).
+	* * VDDARM_IN 0.975V + 125mV = 1.1V < Max(1.3V on bypass)
+	* * VDDARM_IN 1.150V + 125mV = 1.275V < Max(1.3V on bypass) (i.mx6dl)
+	*/
+	clk_set_parent(step_clk, pll2_pfd2_396m_clk);
+	clk_set_parent(pll1_sw_clk, step_clk);
+	ret = clk_set_rate(arm_clk, FREQ_400_MHZ);
+
+	if (ret) {
+		dev_err(cpu_dev, "failed to set clock rate: %d\n", ret);
+		return ret;
+	}
+
+	/*
+	 * Set the ARM and SOC LDO voltage to the 400 MHz setpoint, the PMIC
+	 * supply voltage is set accordingly with a plus of 125 mV from the
+	 * regulator framework if enabling or manual if disabling.
+	 */
+	if (of_machine_is_compatible("fsl,imx6dl") ||
+	    of_machine_is_compatible("fsl,imx6sx")) {
+		if (enable)
+			regulator_set_voltage_tol(arm_reg, 1150000, 0);
+		else
+			regulator_set_voltage_tol(arm_reg, 1275000, 0);
+	} else {
+		if (enable)
+			regulator_set_voltage_tol(arm_reg, 975000, 0);
+		else
+			regulator_set_voltage_tol(arm_reg, 1100000, 0);
+	}
+
+	if (enable) {
+		regulator_set_voltage_tol(soc_reg, 1175000, 0);
+		regulator_set_voltage_tol(pu_reg, 1175000, 0);
+	} else {
+		regulator_set_voltage_tol(soc_reg, 1300000, 0);
+		regulator_set_voltage_tol(pu_reg, 1300000, 0);
+	}
+
+	return 0;
+}
+
+static int imx6q_cpufreq_set_bypass(bool enable)
+{
+	int ret;
+
+	ret = regulator_set_bypass(arm_reg, enable);
+	if (ret)
+		goto arm_failed;
+
+	ret = regulator_set_bypass(soc_reg, enable);
+	if (ret)
+		goto soc_failed;
+
+	ret = regulator_set_bypass(pu_reg, enable);
+	if (ret)
+		goto pu_failed;
+
+	return ret;
+
+pu_failed:
+	regulator_set_bypass(soc_reg, !enable);
+
+soc_failed:
+	regulator_set_bypass(arm_reg, !enable);
+
+arm_failed:
+	return ret;
+}
+
+static int imx6q_cpufreq_complete_bypass(unsigned long new_freq)
+{
+	struct dev_pm_opp *opp;
+	int arm_volt, soc_volt;
+	int ret = 0;
+	int num, i;
+
+	opp = dev_pm_opp_find_freq_ceil(cpu_dev, &new_freq);
+	if (IS_ERR(opp)) {
+		dev_err(cpu_dev, "failed to find OPP for %ld\n", new_freq);
+		return PTR_ERR(opp);
+	}
+
+	arm_volt = dev_pm_opp_get_voltage(opp);
+	dev_pm_opp_put(opp);
+
+	num = dev_pm_opp_get_opp_count(cpu_dev);
+	soc_volt = 0;
+
+	for (i=0; i<num; i++) {
+		if ((freq_table[i].frequency * 1000) == new_freq)
+			soc_volt = imx6_soc_volt[i];
+	}
+
+	if (!soc_volt) {
+		dev_err(cpu_dev, "invalid frequency for complete bypass\n");
+		return -EINVAL;
+	}
+
+	/*
+	 * Increase voltage to the 800 MHz setpoint. arm_reg and soc_reg now
+	 * represent the PMIC voltages since the internal LDOs of the i.MX 6
+	 * are in bypass mode.
+	 */
+	regulator_set_voltage_tol(arm_reg, arm_volt, 0);
+
+	/*
+	 * During bypassing the internal LDOs the min dropout voltage which is
+	 * added to the PMIC voltage was decreased. To allow this change to be
+	 * used we first have to set a different voltage before resetting the
+	 * voltage to 1.175 V. Otherwise the framework would discard the change.
+	 */
+	regulator_set_voltage_tol(soc_reg, 1150000, 0);
+	regulator_set_voltage_tol(pu_reg, 1150000, 0);
+
+	regulator_set_voltage_tol(soc_reg, soc_volt, 0);
+	regulator_set_voltage_tol(pu_reg, soc_volt, 0);
+
+	clk_set_rate(pll1_sys_clk, new_freq);
+	clk_set_parent(pll1_sw_clk, pll1_sys_clk);
+	ret = clk_set_rate(arm_clk, new_freq);
+	if (ret) {
+		dev_err(cpu_dev, "failed to set clock rate: %d\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
 static int imx6q_cpufreq_init(struct cpufreq_policy *policy)
 {
 	int ret;
@@ -181,6 +330,70 @@ static int imx6q_cpufreq_init(struct cpufreq_policy *policy)
 	policy->clk = arm_clk;
 	ret = cpufreq_generic_init(policy, freq_table, transition_latency);
 	policy->suspend_freq = policy->max;
+
+	return ret;
+}
+
+static int imx6q_cpufreq_suspend(struct cpufreq_policy *policy)
+{
+	int ret;
+
+	if (!IS_ERR(dc_reg) && !ignore_dc_reg)
+		regulator_set_voltage_tol(dc_reg, DC_VOLTAGE_MAX, 0);
+
+	if (bypass) {
+		ret = imx6q_cpufreq_prepare_bypass(false);
+		if (ret) {
+			dev_err(cpu_dev, "failed to prepare disabling bypass\n");
+			return ret;
+		}
+
+		dev_info(cpu_dev, "Disabling LDO bypass\n");
+		ret = imx6q_cpufreq_set_bypass(false);
+
+		if (ret)
+			dev_warn(cpu_dev, "failed to disable LDO bypass\n");
+
+		ret = imx6q_cpufreq_complete_bypass(policy->suspend_freq * 1000);
+		if (ret) {
+			dev_err(cpu_dev, "failed to complete bypass\n");
+			return ret;
+		}
+	} else {
+		ret = cpufreq_generic_suspend(policy);
+	}
+
+	return ret;
+}
+
+static int imx6q_cpufreq_resume(struct cpufreq_policy *policy)
+{
+	int ret;
+
+	if (!IS_ERR(dc_reg) && !ignore_dc_reg)
+		regulator_set_voltage_tol(dc_reg, DC_VOLTAGE_MIN, 0);
+
+	if (bypass) {
+		ret = imx6q_cpufreq_prepare_bypass(true);
+		if (ret) {
+			dev_err(cpu_dev, "failed to prepare bypass\n");
+			return ret;
+		}
+
+		dev_info(cpu_dev, "Enabling LDO bypass\n");
+		ret = imx6q_cpufreq_set_bypass(true);
+
+		if (ret)
+			dev_warn(cpu_dev, "failed to bypass internal LDOs\n");
+
+		ret = imx6q_cpufreq_complete_bypass(FREQ_800_MHZ);
+		if (ret) {
+			dev_err(cpu_dev, "failed to complete bypass\n");
+			return ret;
+		}
+	} else {
+		ret = 0;
+	}
 
 	return ret;
 }
@@ -193,8 +406,64 @@ static struct cpufreq_driver imx6q_cpufreq_driver = {
 	.init = imx6q_cpufreq_init,
 	.name = "imx6q-cpufreq",
 	.attr = cpufreq_generic_attr,
-	.suspend = cpufreq_generic_suspend,
+	.suspend = imx6q_cpufreq_suspend,
+	.resume = imx6q_cpufreq_resume,
 };
+
+#define OCOTP_CFG3			0x440
+#define OCOTP_CFG3_SPEED_SHIFT		16
+#define OCOTP_CFG3_6UL_SPEED_696MHZ	0x2
+#define OCOTP_CFG3_6ULL_SPEED_792MHZ	0x2
+#define OCOTP_CFG3_6ULL_SPEED_900MHZ	0x3
+
+static void imx6ul_opp_check_speed_grading(struct device *dev)
+{
+	struct device_node *np;
+	void __iomem *base;
+	u32 val;
+
+	np = of_find_compatible_node(NULL, NULL, "fsl,imx6ul-ocotp");
+	if (!np)
+		return;
+
+	base = of_iomap(np, 0);
+	if (!base) {
+		dev_err(dev, "failed to map ocotp\n");
+		goto put_node;
+	}
+
+	/*
+	 * Speed GRADING[1:0] defines the max speed of ARM:
+	 * 2b'00: Reserved;
+	 * 2b'01: 528000000Hz;
+	 * 2b'10: 696000000Hz on i.MX6UL, 792000000Hz on i.MX6ULL;
+	 * 2b'11: 900000000Hz on i.MX6ULL only;
+	 * We need to set the max speed of ARM according to fuse map.
+	 */
+	val = readl_relaxed(base + OCOTP_CFG3);
+	val >>= OCOTP_CFG3_SPEED_SHIFT;
+	val &= 0x3;
+
+	if (of_machine_is_compatible("fsl,imx6ul")) {
+		if (val != OCOTP_CFG3_6UL_SPEED_696MHZ)
+			if (dev_pm_opp_disable(dev, 696000000))
+				dev_warn(dev, "failed to disable 696MHz OPP\n");
+	}
+
+	if (of_machine_is_compatible("fsl,imx6ull")) {
+		if (val != OCOTP_CFG3_6ULL_SPEED_792MHZ)
+			if (dev_pm_opp_disable(dev, 792000000))
+				dev_warn(dev, "failed to disable 792MHz OPP\n");
+
+		if (val != OCOTP_CFG3_6ULL_SPEED_900MHZ)
+			if (dev_pm_opp_disable(dev, 900000000))
+				dev_warn(dev, "failed to disable 900MHz OPP\n");
+	}
+
+	iounmap(base);
+put_node:
+	of_node_put(np);
+}
 
 static int imx6q_cpufreq_probe(struct platform_device *pdev)
 {
@@ -257,6 +526,8 @@ static int imx6q_cpufreq_probe(struct platform_device *pdev)
 		goto put_reg;
 	}
 
+	dc_reg = devm_regulator_get_optional(cpu_dev, "dc");
+
 	/*
 	 * We expect an OPP table supplied by platform.
 	 * Just, incase the platform did not supply the OPP
@@ -281,11 +552,26 @@ static int imx6q_cpufreq_probe(struct platform_device *pdev)
 		}
 	}
 
+	if (of_machine_is_compatible("fsl,imx6ul") ||
+	    of_machine_is_compatible("fsl,imx6ull")) {
+		imx6ul_opp_check_speed_grading(cpu_dev);
+		num = dev_pm_opp_get_opp_count(cpu_dev);
+	}
+
 	ret = dev_pm_opp_init_cpufreq_table(cpu_dev, &freq_table);
 	if (ret) {
 		dev_err(cpu_dev, "failed to init cpufreq table: %d\n", ret);
 		goto out_free_opp;
 	}
+
+	/*
+	 * On i.MX 6UL/ULL if the SOC is operated with override frequency the
+	 * dc regulator should not be touched.
+	 */
+	if (freq_table[num - 1].frequency * 1000 > FREQ_528_MHZ)
+		ignore_dc_reg = true;
+	if (!IS_ERR(dc_reg) && !ignore_dc_reg)
+		regulator_set_voltage_tol(dc_reg, DC_VOLTAGE_MIN, 0);
 
 	/* Make imx6_soc_volt array's size same as arm opp number */
 	imx6_soc_volt = devm_kzalloc(cpu_dev, sizeof(*imx6_soc_volt) * num, GFP_KERNEL);
@@ -361,6 +647,33 @@ soc_opp_out:
 	ret = regulator_set_voltage_time(arm_reg, min_volt, max_volt);
 	if (ret > 0)
 		transition_latency += ret * 1000;
+
+	bypass = of_property_read_bool(np, "fsl,ldo-bypass");
+
+	if (!bypass || (freq_table[num].frequency == FREQ_1P2_GHZ / 1000)) {
+		dev_info(cpu_dev, "Using anatop regulators: LDOs enabled\n");
+	} else {
+		ret = imx6q_cpufreq_prepare_bypass(true);
+
+		if (ret) {
+			dev_err(cpu_dev, "failed to prepare bypass\n");
+			return ret;
+		}
+
+		dev_info(cpu_dev, "Not using anatop LDO's: enabling LDO bypass\n");
+		ret = imx6q_cpufreq_set_bypass(true);
+
+		if (ret) {
+			dev_warn(cpu_dev, "failed to bypass internal LDOs\n");
+			bypass = false;
+		}
+
+		ret = imx6q_cpufreq_complete_bypass(FREQ_800_MHZ);
+		if (ret) {
+			dev_err(cpu_dev, "failed to complete bypass\n");
+			return ret;
+		}
+	}
 
 	ret = cpufreq_register_driver(&imx6q_cpufreq_driver);
 	if (ret) {

@@ -13,6 +13,7 @@
 #include <linux/gcd.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
+#include <linux/of_graph.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <media/v4l2-ctrls.h>
@@ -36,8 +37,8 @@
  * has not requested planar formats, we should allow 8 pixel
  * alignment.
  */
-#define MIN_W       176
-#define MIN_H       144
+#define MIN_W       16
+#define MIN_H       8
 #define MAX_W      4096
 #define MAX_H      4096
 #define W_ALIGN    4 /* multiple of 16 pixels */
@@ -99,11 +100,10 @@ struct csi_priv {
 	/* the mipi virtual channel number at link validate */
 	int vc_num;
 
-	/* the attached sensor at stream on */
-	struct imx_media_subdev *sensor;
+	/* the upstream endpoint CSI is receiving from */
+	struct v4l2_fwnode_endpoint upstream_ep;
 
 	spinlock_t irqlock; /* protect eof_irq handler */
-	struct timer_list eof_timeout_timer;
 	int eof_irq;
 	int nfb4eof_irq;
 
@@ -118,6 +118,71 @@ struct csi_priv {
 static inline struct csi_priv *sd_to_dev(struct v4l2_subdev *sdev)
 {
 	return container_of(sdev, struct csi_priv, sd);
+}
+
+static inline bool is_parallel_16bit_bus(struct v4l2_fwnode_endpoint *ep)
+{
+	return ep->bus_type != V4L2_MBUS_CSI2 &&
+		ep->bus.parallel.bus_width >= 16;
+}
+
+/*
+ * Parses the fwnode endpoint from the source pad of the entity
+ * connected to this CSI. This will either be the entity directly
+ * upstream from the CSI-2 receiver, or directly upstream from the
+ * video mux. The endpoint is needed to determine the bus type and
+ * bus config coming into the CSI.
+ */
+static int csi_get_upstream_endpoint(struct csi_priv *priv,
+				     struct v4l2_fwnode_endpoint *ep)
+{
+	struct device_node *endpoint, *port;
+	struct imx_media_subdev *imxsd;
+	struct media_entity *src;
+	struct v4l2_subdev *sd;
+	struct media_pad *pad;
+
+	if (!priv->src_sd)
+		return -EPIPE;
+
+	src = &priv->src_sd->entity;
+
+	if (src->function == MEDIA_ENT_F_VID_MUX) {
+		/*
+		 * CSI is connected directly to video mux, skip up to
+		 * CSI-2 receiver if it is in the path, otherwise stay
+		 * with video mux.
+		 */
+		imxsd = imx_media_find_upstream_subdev(priv->md, src,
+						       IMX_MEDIA_GRP_ID_CSI2);
+		if (!IS_ERR(imxsd))
+			src = &imxsd->sd->entity;
+	}
+
+	/* get source pad of entity directly upstream from src */
+	pad = imx_media_find_upstream_pad(priv->md, src, 0);
+	if (IS_ERR(pad))
+		return PTR_ERR(pad);
+
+	sd = media_entity_to_v4l2_subdev(pad->entity);
+
+	/*
+	 * NOTE: this assumes an OF-graph port id is the same as a
+	 * media pad index.
+	 */
+	port = of_graph_get_port_by_id(sd->dev->of_node, pad->index);
+	if (!port)
+		return -ENODEV;
+
+	endpoint = of_get_next_child(port, NULL);
+	of_node_put(port);
+	if (!endpoint)
+		return -ENODEV;
+
+	v4l2_fwnode_endpoint_parse(of_fwnode_handle(endpoint), ep);
+	of_node_put(endpoint);
+
+	return 0;
 }
 
 static void csi_idmac_put_ipu_resources(struct csi_priv *priv)
@@ -223,10 +288,6 @@ static irqreturn_t csi_idmac_eof_interrupt(int irq, void *dev_id)
 	/* toggle IPU double-buffer index */
 	priv->ipu_buf_num ^= 1;
 
-	/* bump the EOF timeout timer */
-	mod_timer(&priv->eof_timeout_timer,
-		  jiffies + msecs_to_jiffies(IMX_MEDIA_EOF_TIMEOUT));
-
 unlock:
 	spin_unlock(&priv->irqlock);
 	return IRQ_HANDLED;
@@ -249,21 +310,6 @@ static irqreturn_t csi_idmac_nfb4eof_interrupt(int irq, void *dev_id)
 	spin_unlock(&priv->irqlock);
 
 	return IRQ_HANDLED;
-}
-
-/*
- * EOF timeout timer function. This is an unrecoverable condition
- * without a stream restart.
- */
-static void csi_idmac_eof_timeout(unsigned long data)
-{
-	struct csi_priv *priv = (struct csi_priv *)data;
-	struct imx_media_video_dev *vdev = priv->vdev;
-
-	v4l2_err(&priv->sd, "EOF timeout\n");
-
-	/* signal a fatal error to capture device */
-	imx_media_capture_device_error(vdev);
 }
 
 static void csi_idmac_setup_vb2_buf(struct csi_priv *priv, dma_addr_t *phys)
@@ -307,17 +353,16 @@ static void csi_idmac_unsetup_vb2_buf(struct csi_priv *priv,
 static int csi_idmac_setup_channel(struct csi_priv *priv)
 {
 	struct imx_media_video_dev *vdev = priv->vdev;
-	struct v4l2_fwnode_endpoint *sensor_ep;
 	struct v4l2_mbus_framefmt *infmt;
 	struct ipu_image image;
 	u32 passthrough_bits;
+	u32 passthrough_cycles;
 	dma_addr_t phys[2];
 	bool passthrough;
 	u32 burst_size;
 	int ret;
 
 	infmt = &priv->format_mbus[CSI_SINK_PAD];
-	sensor_ep = &priv->sensor->sensor_ep;
 
 	ipu_cpmem_zero(priv->idmac_ch);
 
@@ -335,14 +380,16 @@ static int csi_idmac_setup_channel(struct csi_priv *priv)
 	 * Check for conditions that require the IPU to handle the
 	 * data internally as generic data, aka passthrough mode:
 	 * - raw bayer formats
-	 * - the sensor bus is 16-bit parallel
+	 * - the CSI is receiving from a 16-bit parallel bus
 	 */
+	passthrough_cycles = 1;
 	switch (image.pix.pixelformat) {
 	case V4L2_PIX_FMT_SBGGR8:
 	case V4L2_PIX_FMT_SGBRG8:
 	case V4L2_PIX_FMT_SGRBG8:
 	case V4L2_PIX_FMT_SRGGB8:
-		burst_size = 8;
+	case V4L2_PIX_FMT_GREY:
+		burst_size = 16;
 		passthrough = true;
 		passthrough_bits = 8;
 		break;
@@ -350,7 +397,8 @@ static int csi_idmac_setup_channel(struct csi_priv *priv)
 	case V4L2_PIX_FMT_SGBRG16:
 	case V4L2_PIX_FMT_SGRBG16:
 	case V4L2_PIX_FMT_SRGGB16:
-		burst_size = 4;
+	case V4L2_PIX_FMT_Y16:
+		burst_size = 8;
 		passthrough = true;
 		passthrough_bits = 16;
 		break;
@@ -359,8 +407,7 @@ static int csi_idmac_setup_channel(struct csi_priv *priv)
 		burst_size = (image.pix.width & 0x3f) ?
 			     ((image.pix.width & 0x1f) ?
 			      ((image.pix.width & 0xf) ? 8 : 16) : 32) : 64;
-		passthrough = (sensor_ep->bus_type != V4L2_MBUS_CSI2 &&
-			       sensor_ep->bus.parallel.bus_width >= 16);
+		passthrough = is_parallel_16bit_bus(&priv->upstream_ep);
 		passthrough_bits = 16;
 		/* Skip writing U and V components to odd rows */
 		ipu_cpmem_skip_odd_chroma_rows(priv->idmac_ch);
@@ -369,20 +416,29 @@ static int csi_idmac_setup_channel(struct csi_priv *priv)
 	case V4L2_PIX_FMT_UYVY:
 		burst_size = (image.pix.width & 0x1f) ?
 			     ((image.pix.width & 0xf) ? 8 : 16) : 32;
-		passthrough = (sensor_ep->bus_type != V4L2_MBUS_CSI2 &&
-			       sensor_ep->bus.parallel.bus_width >= 16);
+		passthrough = is_parallel_16bit_bus(&priv->upstream_ep);
 		passthrough_bits = 16;
 		break;
+	case V4L2_PIX_FMT_RGB565:
+		/* without CSI2 we can only use passthrough mode */
+		if (priv->upstream_ep.bus_type != V4L2_MBUS_CSI2) {
+			burst_size = 16;
+			passthrough = true;
+			passthrough_bits = 8;
+			passthrough_cycles = 2;
+			break;
+		};
+		/* fallthrough */
 	default:
 		burst_size = (image.pix.width & 0xf) ? 8 : 16;
-		passthrough = (sensor_ep->bus_type != V4L2_MBUS_CSI2 &&
-			       sensor_ep->bus.parallel.bus_width >= 16);
+		passthrough = is_parallel_16bit_bus(&priv->upstream_ep);
 		passthrough_bits = 16;
 		break;
 	}
 
 	if (passthrough) {
-		ipu_cpmem_set_resolution(priv->idmac_ch, image.rect.width,
+		ipu_cpmem_set_resolution(priv->idmac_ch,
+					 image.rect.width*passthrough_cycles,
 					 image.rect.height);
 		ipu_cpmem_set_stride(priv->idmac_ch, image.pix.bytesperline);
 		ipu_cpmem_set_buffer(priv->idmac_ch, 0, image.phys0);
@@ -521,10 +577,6 @@ static int csi_idmac_start(struct csi_priv *priv)
 		goto out_free_nfb4eof_irq;
 	}
 
-	/* start the EOF timeout timer */
-	mod_timer(&priv->eof_timeout_timer,
-		  jiffies + msecs_to_jiffies(IMX_MEDIA_EOF_TIMEOUT));
-
 	return 0;
 
 out_free_nfb4eof_irq:
@@ -563,9 +615,6 @@ static void csi_idmac_stop(struct csi_priv *priv)
 
 	imx_media_free_dma_buf(priv->md, &priv->underrun_buf);
 
-	/* cancel the EOF timeout timer */
-	del_timer_sync(&priv->eof_timeout_timer);
-
 	csi_idmac_put_ipu_resources(priv);
 }
 
@@ -573,34 +622,45 @@ static void csi_idmac_stop(struct csi_priv *priv)
 static int csi_setup(struct csi_priv *priv)
 {
 	struct v4l2_mbus_framefmt *infmt, *outfmt;
-	struct v4l2_mbus_config sensor_mbus_cfg;
-	struct v4l2_fwnode_endpoint *sensor_ep;
+	struct v4l2_mbus_config mbus_cfg;
 	struct v4l2_mbus_framefmt if_fmt;
+	struct imx_media_pixfmt *outcc;
+	struct v4l2_rect crop;
 
 	infmt = &priv->format_mbus[CSI_SINK_PAD];
 	outfmt = &priv->format_mbus[priv->active_output_pad];
-	sensor_ep = &priv->sensor->sensor_ep;
+	outcc = priv->cc[priv->active_output_pad];
 
-	/* compose mbus_config from sensor endpoint */
-	sensor_mbus_cfg.type = sensor_ep->bus_type;
-	sensor_mbus_cfg.flags = (sensor_ep->bus_type == V4L2_MBUS_CSI2) ?
-		sensor_ep->bus.mipi_csi2.flags :
-		sensor_ep->bus.parallel.flags;
+	/* compose mbus_config from the upstream endpoint */
+	mbus_cfg.type = priv->upstream_ep.bus_type;
+	mbus_cfg.flags = (priv->upstream_ep.bus_type == V4L2_MBUS_CSI2) ?
+		priv->upstream_ep.bus.mipi_csi2.flags :
+		priv->upstream_ep.bus.parallel.flags;
 
 	/*
-	 * we need to pass input sensor frame to CSI interface, but
+	 * we need to pass input frame to CSI interface, but
 	 * with translated field type from output format
 	 */
 	if_fmt = *infmt;
 	if_fmt.field = outfmt->field;
+	crop = priv->crop;
 
-	ipu_csi_set_window(priv->csi, &priv->crop);
+	/*
+	 * if cycles is set, we need to handle this over multiple cycles as
+	 * generic/bayer data
+	 */
+	if ((priv->upstream_ep.bus_type != V4L2_MBUS_CSI2) && outcc->cycles) {
+		if_fmt.width *= outcc->cycles;
+		crop.width *= outcc->cycles;
+	}
+
+	ipu_csi_set_window(priv->csi, &crop);
 
 	ipu_csi_set_downsize(priv->csi,
 			     priv->crop.width == 2 * priv->compose.width,
 			     priv->crop.height == 2 * priv->compose.height);
 
-	ipu_csi_init_interface(priv->csi, &sensor_mbus_cfg, &if_fmt);
+	ipu_csi_init_interface(priv->csi, &mbus_cfg, &if_fmt);
 
 	ipu_csi_set_dest(priv->csi, priv->dest);
 
@@ -616,34 +676,10 @@ static int csi_setup(struct csi_priv *priv)
 static int csi_start(struct csi_priv *priv)
 {
 	struct v4l2_fract *output_fi, *input_fi;
-	u32 bad_frames = 0;
 	int ret;
-
-	if (!priv->sensor) {
-		v4l2_err(&priv->sd, "no sensor attached\n");
-		return -EINVAL;
-	}
 
 	output_fi = &priv->frame_interval[priv->active_output_pad];
 	input_fi = &priv->frame_interval[CSI_SINK_PAD];
-
-	ret = v4l2_subdev_call(priv->sensor->sd, sensor,
-			       g_skip_frames, &bad_frames);
-	if (!ret && bad_frames) {
-		u32 delay_usec;
-
-		/*
-		 * This sensor has bad frames when it is turned on,
-		 * add a delay to avoid them before enabling the CSI
-		 * hardware. Especially for sensors with a bt.656 interface,
-		 * any shifts in the SAV/EAV sync codes will cause the CSI
-		 * to lose vert/horiz sync.
-		 */
-		delay_usec = DIV_ROUND_UP_ULL(
-			(u64)USEC_PER_SEC * input_fi->numerator * bad_frames,
-			input_fi->denominator);
-		usleep_range(delay_usec, delay_usec + 1000);
-	}
 
 	if (priv->dest == IPU_CSI_DEST_IDMAC) {
 		ret = csi_idmac_start(priv);
@@ -976,9 +1012,8 @@ static int csi_link_validate(struct v4l2_subdev *sd,
 			     struct v4l2_subdev_format *sink_fmt)
 {
 	struct csi_priv *priv = v4l2_get_subdevdata(sd);
-	struct v4l2_fwnode_endpoint *sensor_ep;
+	struct v4l2_fwnode_endpoint upstream_ep;
 	const struct imx_media_pixfmt *incc;
-	struct imx_media_subdev *sensor;
 	bool is_csi2;
 	int ret;
 
@@ -987,22 +1022,20 @@ static int csi_link_validate(struct v4l2_subdev *sd,
 	if (ret)
 		return ret;
 
-	sensor = __imx_media_find_sensor(priv->md, &priv->sd.entity);
-	if (IS_ERR(sensor)) {
-		v4l2_err(&priv->sd, "no sensor attached\n");
-		return PTR_ERR(priv->sensor);
+	ret = csi_get_upstream_endpoint(priv, &upstream_ep);
+	if (ret) {
+		v4l2_err(&priv->sd, "failed to find upstream endpoint\n");
+		return ret;
 	}
 
 	mutex_lock(&priv->lock);
 
-	priv->sensor = sensor;
-	sensor_ep = &priv->sensor->sensor_ep;
-	is_csi2 = (sensor_ep->bus_type == V4L2_MBUS_CSI2);
+	priv->upstream_ep = upstream_ep;
+	is_csi2 = (upstream_ep.bus_type == V4L2_MBUS_CSI2);
 	incc = priv->cc[CSI_SINK_PAD];
 
 	if (priv->dest != IPU_CSI_DEST_IDMAC &&
-	    (incc->bayer || (!is_csi2 &&
-			     sensor_ep->bus.parallel.bus_width >= 16))) {
+	    (incc->bayer || is_parallel_16bit_bus(&upstream_ep) || (!is_csi2 && incc->cycles))) {
 		v4l2_err(&priv->sd,
 			 "bayer/16-bit parallel buses must go to IDMAC pad\n");
 		ret = -EINVAL;
@@ -1072,12 +1105,8 @@ static void csi_try_crop(struct csi_priv *priv,
 			 struct v4l2_rect *crop,
 			 struct v4l2_subdev_pad_config *cfg,
 			 struct v4l2_mbus_framefmt *infmt,
-			 struct imx_media_subdev *sensor)
+			 struct v4l2_fwnode_endpoint *upstream_ep)
 {
-	struct v4l2_fwnode_endpoint *sensor_ep;
-
-	sensor_ep = &sensor->sensor_ep;
-
 	crop->width = min_t(__u32, infmt->width, crop->width);
 	if (crop->left + crop->width > infmt->width)
 		crop->left = infmt->width - crop->width;
@@ -1091,7 +1120,7 @@ static void csi_try_crop(struct csi_priv *priv,
 	 * sync, so fix it to NTSC/PAL active lines. NTSC contains
 	 * 2 extra lines of active video that need to be cropped.
 	 */
-	if (sensor_ep->bus_type == V4L2_MBUS_BT656 &&
+	if (upstream_ep->bus_type == V4L2_MBUS_BT656 &&
 	    (V4L2_FIELD_HAS_BOTH(infmt->field) ||
 	     infmt->field == V4L2_FIELD_ALTERNATE)) {
 		crop->height = infmt->height;
@@ -1108,6 +1137,7 @@ static int csi_enum_mbus_code(struct v4l2_subdev *sd,
 			      struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct csi_priv *priv = v4l2_get_subdevdata(sd);
+	struct v4l2_fwnode_endpoint upstream_ep;
 	const struct imx_media_pixfmt *incc;
 	struct v4l2_mbus_framefmt *infmt;
 	int ret = 0;
@@ -1124,7 +1154,13 @@ static int csi_enum_mbus_code(struct v4l2_subdev *sd,
 		break;
 	case CSI_SRC_PAD_DIRECT:
 	case CSI_SRC_PAD_IDMAC:
-		if (incc->bayer) {
+		ret = csi_get_upstream_endpoint(priv, &upstream_ep);
+		if (ret) {
+			v4l2_err(&priv->sd, "failed to find upstream endpoint\n");
+			goto out;
+		}
+
+		if (incc->bayer || (upstream_ep.bus_type != V4L2_MBUS_CSI2 && incc->cycles)) {
 			if (code->index != 0) {
 				ret = -EINVAL;
 				goto out;
@@ -1241,7 +1277,7 @@ out:
 }
 
 static void csi_try_fmt(struct csi_priv *priv,
-			struct imx_media_subdev *sensor,
+			struct v4l2_fwnode_endpoint *upstream_ep,
 			struct v4l2_subdev_pad_config *cfg,
 			struct v4l2_subdev_format *sdformat,
 			struct v4l2_rect *crop,
@@ -1263,7 +1299,7 @@ static void csi_try_fmt(struct csi_priv *priv,
 		sdformat->format.width = compose->width;
 		sdformat->format.height = compose->height;
 
-		if (incc->bayer) {
+		if (incc->bayer || (upstream_ep->bus_type != V4L2_MBUS_CSI2 && incc->cycles)) {
 			sdformat->format.code = infmt->code;
 			*cc = incc;
 		} else {
@@ -1309,7 +1345,7 @@ static void csi_try_fmt(struct csi_priv *priv,
 		crop->top = 0;
 		crop->width = sdformat->format.width;
 		crop->height = sdformat->format.height;
-		csi_try_crop(priv, crop, cfg, &sdformat->format, sensor);
+		csi_try_crop(priv, crop, cfg, &sdformat->format, upstream_ep);
 		compose->left = 0;
 		compose->top = 0;
 		compose->width = crop->width;
@@ -1338,20 +1374,20 @@ static int csi_set_fmt(struct v4l2_subdev *sd,
 {
 	struct csi_priv *priv = v4l2_get_subdevdata(sd);
 	struct imx_media_video_dev *vdev = priv->vdev;
+	struct v4l2_fwnode_endpoint upstream_ep;
 	const struct imx_media_pixfmt *cc;
-	struct imx_media_subdev *sensor;
 	struct v4l2_pix_format vdev_fmt;
 	struct v4l2_mbus_framefmt *fmt;
 	struct v4l2_rect *crop, *compose;
-	int ret = 0;
+	int ret;
 
 	if (sdformat->pad >= CSI_NUM_PADS)
 		return -EINVAL;
 
-	sensor = imx_media_find_sensor(priv->md, &priv->sd.entity);
-	if (IS_ERR(sensor)) {
-		v4l2_err(&priv->sd, "no sensor attached\n");
-		return PTR_ERR(sensor);
+	ret = csi_get_upstream_endpoint(priv, &upstream_ep);
+	if (ret) {
+		v4l2_err(&priv->sd, "failed to find upstream endpoint\n");
+		return ret;
 	}
 
 	mutex_lock(&priv->lock);
@@ -1364,7 +1400,7 @@ static int csi_set_fmt(struct v4l2_subdev *sd,
 	crop = __csi_get_crop(priv, cfg, sdformat->which);
 	compose = __csi_get_compose(priv, cfg, sdformat->which);
 
-	csi_try_fmt(priv, sensor, cfg, sdformat, crop, compose, &cc);
+	csi_try_fmt(priv, &upstream_ep, cfg, sdformat, crop, compose, &cc);
 
 	fmt = __csi_get_fmt(priv, cfg, sdformat->pad, sdformat->which);
 	*fmt = sdformat->format;
@@ -1381,8 +1417,8 @@ static int csi_set_fmt(struct v4l2_subdev *sd,
 			format.pad = pad;
 			format.which = sdformat->which;
 			format.format = sdformat->format;
-			csi_try_fmt(priv, sensor, cfg, &format, NULL, compose,
-				    &outcc);
+			csi_try_fmt(priv, &upstream_ep, cfg, &format,
+				    NULL, compose, &outcc);
 
 			outfmt = __csi_get_fmt(priv, cfg, pad, sdformat->which);
 			*outfmt = format.format;
@@ -1477,18 +1513,18 @@ static int csi_set_selection(struct v4l2_subdev *sd,
 			     struct v4l2_subdev_selection *sel)
 {
 	struct csi_priv *priv = v4l2_get_subdevdata(sd);
+	struct v4l2_fwnode_endpoint upstream_ep;
 	struct v4l2_mbus_framefmt *infmt;
 	struct v4l2_rect *crop, *compose;
-	struct imx_media_subdev *sensor;
-	int pad, ret = 0;
+	int pad, ret;
 
 	if (sel->pad != CSI_SINK_PAD)
 		return -EINVAL;
 
-	sensor = imx_media_find_sensor(priv->md, &priv->sd.entity);
-	if (IS_ERR(sensor)) {
-		v4l2_err(&priv->sd, "no sensor attached\n");
-		return PTR_ERR(sensor);
+	ret = csi_get_upstream_endpoint(priv, &upstream_ep);
+	if (ret) {
+		v4l2_err(&priv->sd, "failed to find upstream endpoint\n");
+		return ret;
 	}
 
 	mutex_lock(&priv->lock);
@@ -1516,7 +1552,7 @@ static int csi_set_selection(struct v4l2_subdev *sd,
 			goto out;
 		}
 
-		csi_try_crop(priv, &sel->r, cfg, infmt, sensor);
+		csi_try_crop(priv, &sel->r, cfg, infmt, &upstream_ep);
 
 		*crop = sel->r;
 
@@ -1740,8 +1776,6 @@ static int imx_csi_probe(struct platform_device *pdev)
 	priv->csi_id = pdata->csi;
 	priv->smfc_id = (priv->csi_id == 0) ? 0 : 2;
 
-	setup_timer(&priv->eof_timeout_timer, csi_idmac_eof_timeout,
-		    (unsigned long)priv);
 	spin_lock_init(&priv->irqlock);
 
 	v4l2_subdev_init(&priv->sd, &csi_subdev_ops);
