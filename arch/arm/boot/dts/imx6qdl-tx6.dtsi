@@ -789,7 +789,7 @@
 	no-1-8-v;
 	cd-gpios = <&gpio7 2 GPIO_ACTIVE_LOW>;
 	fsl,wp-controller;
-	status = "disabled";
+	status = "okay";
 };
 
 &usdhc2 {
