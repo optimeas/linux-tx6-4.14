@@ -1,4 +1,5 @@
 config WIRELESS_EXT
+	def_bool y
 	bool
 
 config WEXT_CORE
@@ -11,9 +12,11 @@ config WEXT_PROC
 	depends on WEXT_CORE
 
 config WEXT_SPY
+	def_bool y
 	bool
 
 config WEXT_PRIV
+	def_bool y
 	bool
 
 config CFG80211
@@ -30,6 +33,7 @@ config CFG80211
 	  When built as a module it will be called cfg80211.
 
 config NL80211_TESTMODE
+	def_bool y
 	bool "nl80211 testmode command"
 	depends on CFG80211
 	help
