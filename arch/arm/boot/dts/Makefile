@@ -369,6 +369,7 @@ dtb-$(CONFIG_SOC_IMX6Q) += \
 	imx6dl-tx6s-8035-smartmvb-v2p3.dtb \
 	imx6dl-tx6s-8035-smartrail-v1p0.dtb \
 	imx6q-tx6qp-8037-smartrail-v1p0.dtb \
+	imx6dl-tx6u-8033-bekolog-v1p0.dtb \
 	imx6dl-apf6dev.dtb \
 	imx6dl-aristainetos_4.dtb \
 	imx6dl-aristainetos_7.dtb \
